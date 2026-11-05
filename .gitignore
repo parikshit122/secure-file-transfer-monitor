@@ -1,0 +1,22 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+backend/sftms.db
+
+# Node
+apps/web/node_modules/
+apps/web/dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Environment
+.env
+*.pem
+*.key
