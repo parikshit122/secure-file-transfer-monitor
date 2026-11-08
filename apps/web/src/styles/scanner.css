@@ -1,0 +1,12 @@
+.upload-zone-drag {
+  border-color: #06b6d4;
+  background: rgba(6, 182, 212, 0.05);
+  box-shadow: 0 0 40px rgba(6, 182, 212, 0.1);
+}
+.scan-result-enter {
+  animation: fadeSlideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.threat-bar-clean { box-shadow: 0 0 12px rgba(16, 185, 129, 0.3); }
+.threat-bar-suspicious { box-shadow: 0 0 12px rgba(245, 158, 11, 0.3); }
+.threat-bar-dangerous { box-shadow: 0 0 12px rgba(244, 63, 94, 0.3); }
+.scan-spinner { filter: drop-shadow(0 0 8px rgba(6, 182, 212, 0.5)); }

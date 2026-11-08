@@ -1,0 +1,49 @@
+@import "tailwindcss";
+body {
+  background: #020617;
+  overflow: hidden;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+.glass {
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+.glow-border {
+  animation: borderGlow 3s ease-in-out infinite;
+}
+.gradient-text {
+  background: linear-gradient(135deg, #06b6d4, #8b5cf6, #ec4899);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.mesh-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  opacity: 0.15;
+  background:
+    radial-gradient(ellipse 600px 400px at 10% 20%, #06b6d4, transparent),
+    radial-gradient(ellipse 500px 500px at 80% 80%, #8b5cf6, transparent),
+    radial-gradient(ellipse 400px 300px at 50% 50%, #ec4899, transparent);
+  animation: meshMove 20s ease-in-out infinite alternate;
+}
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #475569; }
+.pulse-ring::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  animation: pulseRing 2s ease-out infinite;
+}
+.shimmer {
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.05), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite;
+}

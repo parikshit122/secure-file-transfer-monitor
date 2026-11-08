@@ -1,47 +1,43 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text
-from sqlalchemy.sql import func
-from .database import Base
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, ForeignKey
+from sqlalchemy.orm import relationship
+from app.core.database import Base
+from datetime import datetime, timezone
+
 
 class FileEvent(Base):
     __tablename__ = "file_events"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(DateTime, server_default=func.now())
-    event_type = Column(String(50))
-    src_path = Column(Text)
-    dest_path = Column(Text, nullable=True)
-    file_name = Column(String(500))
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String, nullable=False)
+    event_type = Column(String, nullable=False)
+    file_path = Column(String, nullable=False)
     file_size = Column(Integer, default=0)
-    file_type = Column(String(100), nullable=True)
-    user = Column(String(200), nullable=True)
-    process = Column(String(200), nullable=True)
-    hash_blake3 = Column(String(128), nullable=True)
-    hash_sha256 = Column(String(128), nullable=True)
-    is_sensitive = Column(Integer, default=0)
-    threat_level = Column(String(20), default="clean")
-    details = Column(Text, nullable=True)
+    file_hash = Column(String, nullable=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    scan_results = relationship("ScanResult", back_populates="file_event")
+    alerts = relationship("Alert", back_populates="file_event")
+
 
 class ScanResult(Base):
     __tablename__ = "scan_results"
+    id = Column(Integer, primary_key=True, index=True)
+    file_event_id = Column(Integer, ForeignKey("file_events.id"), nullable=True)
+    file_hash = Column(String, nullable=True)
+    verdict = Column(String, default="clean")
+    threat_score = Column(Integer, default=0)
+    findings = Column(Text, default="[]")
+    scan_duration_ms = Column(Float, default=0.0)
+    scanned_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    file_event = relationship("FileEvent", back_populates="scan_results")
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(DateTime, server_default=func.now())
-    file_name = Column(String(500))
-    file_path = Column(Text)
-    file_type = Column(String(100))
-    scan_type = Column(String(50))
-    result = Column(String(20))
-    threat_name = Column(String(200), nullable=True)
-    details = Column(Text, nullable=True)
 
 class Alert(Base):
     __tablename__ = "alerts"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(DateTime, server_default=func.now())
-    severity = Column(String(20))
-    title = Column(String(500))
-    description = Column(Text)
-    file_name = Column(String(500), nullable=True)
-    action_taken = Column(String(100), nullable=True)
-    is_resolved = Column(Integer, default=0)
+    id = Column(Integer, primary_key=True, index=True)
+    file_event_id = Column(Integer, ForeignKey("file_events.id"), nullable=True)
+    scan_result_id = Column(Integer, ForeignKey("scan_results.id"), nullable=True)
+    severity = Column(String, default="info")
+    title = Column(String, nullable=False)
+    description = Column(Text, default="")
+    is_resolved = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    file_event = relationship("FileEvent", back_populates="alerts")

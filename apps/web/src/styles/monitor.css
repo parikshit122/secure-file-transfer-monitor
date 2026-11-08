@@ -1,0 +1,16 @@
+.live-dot { position: relative; }
+.live-dot::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.3;
+  animation: pulseRing 2s ease-out infinite;
+}
+.event-row-new {
+  animation: fadeSlideUp 0.4s ease-out;
+}
+.filter-active {
+  box-shadow: 0 0 8px rgba(6, 182, 212, 0.2);
+}

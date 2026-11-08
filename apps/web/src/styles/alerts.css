@@ -1,0 +1,5 @@
+.alert-dangerous { border-left: 3px solid #f43f5e; }
+.alert-suspicious { border-left: 3px solid #f59e0b; }
+.alert-info { border-left: 3px solid #06b6d4; }
+.alert-dismiss { animation: fadeSlideUp 0.3s ease-out reverse; }
+.clear-all-hover:hover { box-shadow: 0 0 12px rgba(244, 63, 94, 0.2); }
