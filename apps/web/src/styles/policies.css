@@ -1,0 +1,44 @@
+.policy-card-active {
+  border-left: 3px solid #10b981;
+}
+.policy-card-inactive {
+  border-left: 3px solid #475569;
+  opacity: 0.6;
+}
+.policy-toggle {
+  width: 44px;
+  height: 24px;
+  border-radius: 12px;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.3s;
+}
+.policy-toggle-on {
+  background: #10b981;
+}
+.policy-toggle-off {
+  background: #475569;
+}
+.policy-toggle-knob {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: white;
+  position: absolute;
+  top: 3px;
+  transition: left 0.3s;
+}
+.policy-toggle-on .policy-toggle-knob {
+  left: 23px;
+}
+.policy-toggle-off .policy-toggle-knob {
+  left: 3px;
+}
+.policy-type-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}

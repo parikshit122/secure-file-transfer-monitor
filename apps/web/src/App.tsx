@@ -4,6 +4,7 @@ import Dashboard from "./pages/Dashboard";
 import FileMonitor from "./pages/FileMonitor";
 import Scanner from "./pages/Scanner";
 import Alerts from "./pages/Alerts";
+import Policies from "./pages/Policies";
 
 export default function App() {
   return (
@@ -14,6 +15,7 @@ export default function App() {
           <Route path="/monitor" element={<FileMonitor />} />
           <Route path="/scanner" element={<Scanner />} />
           <Route path="/alerts" element={<Alerts />} />
+          <Route path="/policies" element={<Policies />} />
         </Route>
       </Routes>
     </BrowserRouter>

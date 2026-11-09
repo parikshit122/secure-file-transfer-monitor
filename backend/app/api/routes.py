@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, UploadFile, File
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.core.models import FileEvent, ScanResult, Alert
+from app.core.models import FileEvent, ScanResult, Alert, Policy
 from app.scanning.scanner import scan_file, scan_bytes
 
 router = APIRouter()
@@ -27,7 +27,9 @@ def get_stats(db: Session = Depends(get_db)):
 
 @router.get("/events")
 def get_events(limit: int = 50, db: Session = Depends(get_db)):
-    events = db.query(FileEvent).order_by(FileEvent.timestamp.desc()).limit(limit).all()
+    events = (
+        db.query(FileEvent).order_by(FileEvent.timestamp.desc()).limit(limit).all()
+    )
     return [
         {
             "id": e.id,
@@ -107,3 +109,121 @@ def scan_upload(file: UploadFile = File(...)):
         "findings": result.findings,
         "scan_duration_ms": result.scanned_in_ms,
     }
+
+
+# ── Policy CRUD ──────────────────────────────────────────────
+
+
+@router.get("/policies")
+def get_policies(db: Session = Depends(get_db)):
+    policies = db.query(Policy).order_by(Policy.id).all()
+    return [
+        {
+            "id": p.id,
+            "name": p.name,
+            "description": p.description,
+            "policy_type": p.policy_type,
+            "action": p.action,
+            "enabled": p.enabled,
+            "parameters": p.parameters,
+        }
+        for p in policies
+    ]
+
+
+@router.post("/policies")
+def create_policy(data: dict, db: Session = Depends(get_db)):
+    p = Policy(
+        name=data.get("name", ""),
+        description=data.get("description", ""),
+        policy_type=data.get("policy_type", "extension_block"),
+        action=data.get("action", "block"),
+        enabled=data.get("enabled", True),
+        parameters=data.get("parameters", ""),
+    )
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return {"id": p.id, "status": "created"}
+
+
+@router.put("/policies/{policy_id}")
+def update_policy(policy_id: int, data: dict, db: Session = Depends(get_db)):
+    p = db.query(Policy).filter(Policy.id == policy_id).first()
+    if not p:
+        return {"status": "not found"}
+    for key in ["name", "description", "policy_type", "action", "enabled", "parameters"]:
+        if key in data:
+            setattr(p, key, data[key])
+    db.commit()
+    return {"status": "updated"}
+
+
+@router.delete("/policies/{policy_id}")
+def delete_policy(policy_id: int, db: Session = Depends(get_db)):
+    p = db.query(Policy).filter(Policy.id == policy_id).first()
+    if p:
+        db.delete(p)
+        db.commit()
+        return {"status": "deleted"}
+    return {"status": "not found"}
+
+
+@router.post("/policies/seed")
+def seed_policies(db: Session = Depends(get_db)):
+    count = db.query(Policy).count()
+    if count > 0:
+        return {"status": "already seeded", "count": count}
+    defaults = [
+        Policy(
+            name="Block Executables",
+            description="Block .exe, .bat, .cmd, .ps1, .msi files",
+            policy_type="extension_block",
+            action="block",
+            enabled=True,
+            parameters=".exe,.bat,.cmd,.ps1,.msi",
+        ),
+        Policy(
+            name="Block Scripts",
+            description="Block .js, .vbs, .wsf, .sh script files",
+            policy_type="extension_block",
+            action="block",
+            enabled=True,
+            parameters=".js,.vbs,.wsf,.sh",
+        ),
+        Policy(
+            name="Large File Warning",
+            description="Flag files larger than 100 MB",
+            policy_type="size_limit",
+            action="alert",
+            enabled=True,
+            parameters="104857600",
+        ),
+        Policy(
+            name="Double Extension Block",
+            description="Block files with double extensions like .pdf.exe",
+            policy_type="double_extension",
+            action="block",
+            enabled=True,
+            parameters="",
+        ),
+        Policy(
+            name="Archive Scan",
+            description="Scan inside .zip and .rar archives",
+            policy_type="archive_scan",
+            action="scan",
+            enabled=True,
+            parameters=".zip,.rar,.7z",
+        ),
+        Policy(
+            name="Whitelist Documents",
+            description="Allow .pdf, .docx, .xlsx, .pptx without deep scan",
+            policy_type="whitelist",
+            action="allow",
+            enabled=True,
+            parameters=".pdf,.docx,.xlsx,.pptx",
+        ),
+    ]
+    db.add_all(defaults)
+    db.commit()
+    return {"status": "seeded", "count": len(defaults)}
