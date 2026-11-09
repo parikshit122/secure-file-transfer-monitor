@@ -20,7 +20,7 @@ const navItems = [
   { to: "/scanner", icon: RiScan2Fill, label: "Scanner" },
   { to: "/alerts", icon: RiAlarmWarningFill, label: "Alerts" },
   { to: "/policies",icon: RiShieldCheckFill, label: "Policies", path: "/policies",},
-  { to: "/reports", icon: RiBarChartBoxFill, label: "Reports", disabled: true },
+  { to: "/reports", icon: RiBarChartBoxFill, label: "Reports" },
   { to: "/settings", icon: RiSettings4Fill, label: "Settings", disabled: true },
 ];
 
