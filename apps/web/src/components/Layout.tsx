@@ -19,9 +19,9 @@ const navItems = [
   { to: "/monitor", icon: RiFolderShield2Fill, label: "File Monitor" },
   { to: "/scanner", icon: RiScan2Fill, label: "Scanner" },
   { to: "/alerts", icon: RiAlarmWarningFill, label: "Alerts" },
-  { to: "/policies",icon: RiShieldCheckFill, label: "Policies", path: "/policies",},
+  { to: "/policies", icon: RiShieldCheckFill, label: "Policies" },
   { to: "/reports", icon: RiBarChartBoxFill, label: "Reports" },
-  { to: "/settings", icon: RiSettings4Fill, label: "Settings", disabled: true },
+  { to: "/settings", icon: RiSettings4Fill, label: "Settings" },
 ];
 
 export default function Layout() {
@@ -65,33 +65,6 @@ export default function Layout() {
 
         <nav className="flex-1 p-2 space-y-1 overflow-y-auto">
           {navItems.map((item, i) => {
-            if (item.disabled) {
-              return (
-                <div
-                  key={item.label}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-600 cursor-not-allowed"
-                >
-                  <item.icon className="w-5 h-5 shrink-0" />
-                  <AnimatePresence>
-                    {!collapsed && (
-                      <motion.span
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        className="text-sm whitespace-nowrap"
-                      >
-                        {item.label}
-                      </motion.span>
-                    )}
-                  </AnimatePresence>
-                  {!collapsed && (
-                    <span className="ml-auto text-[9px] bg-slate-800 text-slate-600 px-1.5 py-0.5 rounded-md">
-                      Soon
-                    </span>
-                  )}
-                </div>
-              );
-            }
             const isActive = location.pathname === item.to;
             return (
               <NavLink key={item.to} to={item.to} end={item.to === "/"}>

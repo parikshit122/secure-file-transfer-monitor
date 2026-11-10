@@ -1,10 +1,21 @@
 from fastapi import APIRouter, Depends, UploadFile, File
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.core.models import FileEvent, ScanResult, Alert, Policy
-from app.scanning.scanner import scan_file, scan_bytes
+from app.core.models import QuarantinedFile
+from app.defense.quarantine import restore_quarantined_file, delete_quarantined_file
+from app.core.models import (
+    FileEvent,
+    ScanResult,
+    Alert,
+    Policy,
+    SensitiveDirectory,
+)
+from app.scanning.scanner import scan_bytes
 
 router = APIRouter()
+
+
+# ── Stats ────────────────────────────────────────────────────
 
 
 @router.get("/stats")
@@ -17,12 +28,27 @@ def get_stats(db: Session = Depends(get_db)):
         .count()
     )
     alerts = db.query(Alert).filter(Alert.is_resolved == False).count()
+    transfers = (
+        db.query(FileEvent)
+        .filter(FileEvent.event_type.in_(["move", "transfer"]))
+        .count()
+    )
+    tampered = (
+        db.query(FileEvent)
+        .filter(FileEvent.integrity_status == "tampered")
+        .count()
+    )
     return {
         "total_files": total,
         "total_scans": scans,
         "threats_blocked": threats,
         "active_alerts": alerts,
+        "total_transfers": transfers,
+        "tampered_files": tampered,
     }
+
+
+# ── File Events (Transfer Log) ──────────────────────────────
 
 
 @router.get("/events")
@@ -35,13 +61,23 @@ def get_events(limit: int = 50, db: Session = Depends(get_db)):
             "id": e.id,
             "filename": e.filename,
             "event_type": e.event_type,
-            "file_path": e.file_path,
+            "source_path": e.source_path,
+            "dest_path": e.dest_path,
             "file_size": e.file_size,
             "file_hash": e.file_hash,
+            "pre_hash": e.pre_hash,
+            "post_hash": e.post_hash,
+            "integrity_status": e.integrity_status,
+            "process_name": e.process_name,
+            "username": e.username,
+            "is_sensitive": e.is_sensitive,
             "timestamp": e.timestamp.isoformat() if e.timestamp else None,
         }
         for e in events
     ]
+
+
+# ── Scans ────────────────────────────────────────────────────
 
 
 @router.get("/scans")
@@ -67,6 +103,9 @@ def get_scans(limit: int = 50, db: Session = Depends(get_db)):
     return results
 
 
+# ── Alerts ───────────────────────────────────────────────────
+
+
 @router.get("/alerts")
 def get_alerts(active_only: bool = True, db: Session = Depends(get_db)):
     q = db.query(Alert).order_by(Alert.created_at.desc())
@@ -76,6 +115,7 @@ def get_alerts(active_only: bool = True, db: Session = Depends(get_db)):
         {
             "id": a.id,
             "severity": a.severity,
+            "alert_type": a.alert_type,
             "title": a.title,
             "description": a.description,
             "is_resolved": a.is_resolved,
@@ -95,6 +135,9 @@ def resolve_alert(alert_id: int, db: Session = Depends(get_db)):
     return {"status": "not found"}
 
 
+# ── Manual Scan ──────────────────────────────────────────────
+
+
 @router.post("/scan")
 def scan_upload(file: UploadFile = File(...)):
     data = file.file.read()
@@ -111,7 +154,7 @@ def scan_upload(file: UploadFile = File(...)):
     }
 
 
-# ── Policy CRUD ──────────────────────────────────────────────
+# ── Policies ─────────────────────────────────────────────────
 
 
 @router.get("/policies")
@@ -227,3 +270,82 @@ def seed_policies(db: Session = Depends(get_db)):
     db.add_all(defaults)
     db.commit()
     return {"status": "seeded", "count": len(defaults)}
+
+
+# ── Sensitive Directories ────────────────────────────────────
+
+
+@router.get("/sensitive-dirs")
+def get_sensitive_dirs(db: Session = Depends(get_db)):
+    dirs = db.query(SensitiveDirectory).order_by(SensitiveDirectory.id).all()
+    return [
+        {
+            "id": d.id,
+            "path": d.path,
+            "label": d.label,
+            "alert_on_access": d.alert_on_access,
+            "alert_on_copy": d.alert_on_copy,
+            "alert_on_move": d.alert_on_move,
+            "alert_on_delete": d.alert_on_delete,
+        }
+        for d in dirs
+    ]
+
+
+@router.post("/sensitive-dirs")
+def add_sensitive_dir(data: dict, db: Session = Depends(get_db)):
+    d = SensitiveDirectory(
+        path=data.get("path", ""),
+        label=data.get("label", ""),
+        alert_on_access=data.get("alert_on_access", True),
+        alert_on_copy=data.get("alert_on_copy", True),
+        alert_on_move=data.get("alert_on_move", True),
+        alert_on_delete=data.get("alert_on_delete", True),
+    )
+    db.add(d)
+    db.commit()
+    db.refresh(d)
+    return {"id": d.id, "status": "created"}
+
+
+@router.delete("/sensitive-dirs/{dir_id}")
+def remove_sensitive_dir(dir_id: int, db: Session = Depends(get_db)):
+    d = db.query(SensitiveDirectory).filter(SensitiveDirectory.id == dir_id).first()
+    if d:
+        db.delete(d)
+        db.commit()
+        return {"status": "deleted"}
+    return {"status": "not found"}
+
+# ── Quarantine Vault API ──────────────────────────────────────
+
+@router.get("/quarantine")
+def get_quarantined_files(db: Session = Depends(get_db)):
+    files = (
+        db.query(QuarantinedFile)
+        .filter(QuarantinedFile.is_restored == False)
+        .order_by(QuarantinedFile.quarantined_at.desc())
+        .all()
+    )
+    return [
+        {
+            "id": f.id,
+            "filename": f.original_filename,
+            "original_path": f.original_path,
+            "file_size": f.file_size,
+            "file_hash": f.file_hash,
+            "reason": f.reason,
+            "quarantined_at": f.quarantined_at.isoformat() if f.quarantined_at else None,
+        }
+        for f in files
+    ]
+
+@router.post("/quarantine/{file_id}/restore")
+def restore_file_route(file_id: int, db: Session = Depends(get_db)):
+    success = restore_quarantined_file(file_id, db)
+    return {"status": "restored" if success else "failed"}
+
+@router.delete("/quarantine/{file_id}")
+def delete_quarantined_route(file_id: int, db: Session = Depends(get_db)):
+    success = delete_quarantined_file(file_id, db)
+    return {"status": "deleted" if success else "failed"}

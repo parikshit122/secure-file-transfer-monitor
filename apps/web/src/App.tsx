@@ -6,6 +6,7 @@ import Scanner from "./pages/Scanner";
 import Alerts from "./pages/Alerts";
 import Policies from "./pages/Policies";
 import Reports from "./pages/Reports";
+import Settings from "./pages/Settings";
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="/alerts" element={<Alerts />} />
           <Route path="/policies" element={<Policies />} />
           <Route path="/reports" element={<Reports />} />
+          <Route path="/settings" element={<Settings />} />
         </Route>
       </Routes>
     </BrowserRouter>

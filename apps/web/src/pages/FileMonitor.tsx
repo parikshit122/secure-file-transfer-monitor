@@ -1,333 +1,254 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import {
+  RiFolderShield2Fill,
   RiSearchLine,
-  RiFilter3Line,
-  RiRefreshLine,
-  RiEyeLine,
-  RiEyeOffLine,
-  RiFileAddFill,
-  RiFileEditFill,
-  RiFileReduceFill,
-  RiFileTransferFill,
-  RiFolderOpenFill,
-  RiRadioButtonFill,
-  RiCheckDoubleFill,
-  RiErrorWarningFill,
-  RiCloseCircleFill,
+  RiArrowRightLine,
+  RiShieldCheckLine,
+  RiShieldCrossLine,
+  RiQuestionLine,
+  RiAlertLine,
+  RiUsbLine,
+  RiDeleteBinLine,
+  RiFileCopyLine,
+  RiFileTransferLine,
+  RiEditLine,
+  RiAddLine,
+  RiFingerprintLine,
 } from "react-icons/ri";
-import type { IconType } from "react-icons";
 
 interface FileEvent {
   id: number;
   filename: string;
   event_type: string;
-  file_path: string;
+  source_path: string | null;
+  dest_path: string | null;
   file_size: number;
-  file_hash: string;
-  timestamp: string;
+  file_hash: string | null;
+  pre_hash: string | null;
+  post_hash: string | null;
+  integrity_status: string;
+  process_name: string | null;
+  username: string | null;
+  is_sensitive: boolean;
+  timestamp: string | null;
 }
 
-interface ScanData {
-  id: number;
-  filename: string;
-  verdict: string;
-  threat_score: number;
-}
-
-const EVT: Record<
+const eventTypeConfig: Record<
   string,
-  { label: string; icon: IconType; color: string; bg: string }
+  { icon: typeof RiAddLine; color: string; label: string }
 > = {
-  created: {
-    label: "Created",
-    icon: RiFileAddFill,
-    color: "text-emerald-400",
-    bg: "bg-emerald-400/10 border-emerald-400/30",
-  },
-  modified: {
-    label: "Modified",
-    icon: RiFileEditFill,
-    color: "text-amber-400",
-    bg: "bg-amber-400/10 border-amber-400/30",
-  },
-  deleted: {
-    label: "Deleted",
-    icon: RiFileReduceFill,
-    color: "text-rose-400",
-    bg: "bg-rose-400/10 border-rose-400/30",
-  },
-  moved: {
-    label: "Moved",
-    icon: RiFileTransferFill,
-    color: "text-cyan-400",
-    bg: "bg-cyan-400/10 border-cyan-400/30",
-  },
+  create: { icon: RiAddLine, color: "text-cyan-400 bg-cyan-400/10", label: "Created" },
+  modify: { icon: RiEditLine, color: "text-blue-400 bg-blue-400/10", label: "Modified" },
+  move: { icon: RiFileTransferLine, color: "text-violet-400 bg-violet-400/10", label: "Moved" },
+  transfer: { icon: RiUsbLine, color: "text-red-400 bg-red-400/10", label: "Transfer" },
+  delete: { icon: RiDeleteBinLine, color: "text-slate-400 bg-slate-400/10", label: "Deleted" },
+  copy: { icon: RiFileCopyLine, color: "text-amber-400 bg-amber-400/10", label: "Copied" },
 };
 
-function formatSize(b: number) {
-  if (!b) return "—";
-  const k = 1024,
-    s = ["B", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(b) / Math.log(k));
-  return parseFloat((b / Math.pow(k, i)).toFixed(1)) + " " + s[i];
-}
+const integrityConfig: Record<
+  string,
+  { icon: typeof RiShieldCheckLine; color: string; label: string }
+> = {
+  baseline: { icon: RiFingerprintLine, color: "text-cyan-400", label: "Baseline" },
+  verified: { icon: RiShieldCheckLine, color: "text-emerald-400", label: "Verified" },
+  modified: { icon: RiEditLine, color: "text-amber-400", label: "Modified" },
+  tampered: { icon: RiShieldCrossLine, color: "text-red-400 font-bold", label: "Tampered" },
+  unknown: { icon: RiQuestionLine, color: "text-slate-500", label: "Unknown" },
+};
 
-function timeAgo(ts: string) {
-  const s = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
-  if (s < 5) return "just now";
-  if (s < 60) return s + "s ago";
-  const m = Math.floor(s / 60);
-  if (m < 60) return m + "m ago";
-  return Math.floor(m / 60) + "h ago";
-}
-
-function VerdictBadge({ verdict }: { verdict: string }) {
-  if (verdict === "clean")
-    return (
-      <span className="flex items-center gap-1 text-xs font-medium text-emerald-400 bg-emerald-400/10 border border-emerald-400/30 px-2 py-1 rounded-full">
-        <RiCheckDoubleFill className="w-3 h-3" />
-        Clean
-      </span>
-    );
-  if (verdict === "suspicious")
-    return (
-      <span className="flex items-center gap-1 text-xs font-medium text-amber-400 bg-amber-400/10 border border-amber-400/30 px-2 py-1 rounded-full">
-        <RiErrorWarningFill className="w-3 h-3" />
-        Suspicious
-      </span>
-    );
-  if (verdict === "dangerous")
-    return (
-      <span className="flex items-center gap-1 text-xs font-medium text-rose-400 bg-rose-400/10 border border-rose-400/30 px-2 py-1 rounded-full">
-        <RiCloseCircleFill className="w-3 h-3" />
-        Dangerous
-      </span>
-    );
-  return <span className="text-xs text-slate-500">—</span>;
+function formatSize(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
 }
 
 export default function FileMonitor() {
   const [events, setEvents] = useState<FileEvent[]>([]);
-  const [scans, setScans] = useState<ScanData[]>([]);
-  const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
-  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [loading, setLoading] = useState(true);
 
-  const load = useCallback(() => {
-    fetch("/api/events")
-      .then((r) => r.json())
-      .then(setEvents)
-      .catch(() => {});
-    fetch("/api/scans")
-      .then((r) => r.json())
-      .then(setScans)
-      .catch(() => {});
-  }, []);
+  const load = async () => {
+    try {
+      const res = await fetch("http://127.0.0.1:8000/api/events?limit=100");
+      const data = await res.json();
+      setEvents(Array.isArray(data) ? data : []);
+    } catch {
+      /* ignore */
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     load();
-  }, [load]);
-  useEffect(() => {
-    if (!autoRefresh) return;
-    const iv = setInterval(load, 3000);
-    return () => clearInterval(iv);
-  }, [autoRefresh, load]);
+    const interval = setInterval(load, 3000);
+    return () => clearInterval(interval);
+  }, []);
 
-  const scanMap = new Map(scans.map((s) => [s.filename, s.verdict]));
   const filtered = events.filter((e) => {
-    const mt = filter === "all" || e.event_type === filter;
-    const ms =
-      !search || e.filename.toLowerCase().includes(search.toLowerCase());
-    return mt && ms;
+    const matchSearch =
+      !search ||
+      e.filename.toLowerCase().includes(search.toLowerCase()) ||
+      (e.source_path || "").toLowerCase().includes(search.toLowerCase()) ||
+      (e.dest_path || "").toLowerCase().includes(search.toLowerCase());
+    const matchType = typeFilter === "all" || e.event_type === typeFilter;
+    return matchSearch && matchType;
   });
 
-  const counts: Record<string, number> = {
-    all: events.length,
-    created: 0,
-    modified: 0,
-    deleted: 0,
-    moved: 0,
-  };
-  events.forEach((e) => {
-    if (counts[e.event_type] !== undefined) counts[e.event_type]++;
-  });
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="w-8 h-8 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6">
-      <motion.div
-        initial={{ opacity: 0, x: -20 }}
-        animate={{ opacity: 1, x: 0 }}
-        className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
-      >
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="space-y-6"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
-          <h1 className="text-3xl font-bold gradient-text">File Monitor</h1>
-          <p className="text-slate-400 mt-1 flex items-center gap-2">
-            <RiFolderOpenFill className="w-4 h-4" />
-            Downloads folder &middot; Auto-scanning
+          <h1 className="text-2xl font-bold gradient-text">File Monitor</h1>
+          <p className="text-sm text-slate-500 mt-1">
+            Real-time file transfer tracking &amp; integrity verification
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => setAutoRefresh(!autoRefresh)}
-            className={
-              "flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border " +
-              (autoRefresh
-                ? "bg-emerald-400/10 text-emerald-400 border-emerald-400/30"
-                : "bg-slate-800 text-slate-400 border-slate-700")
-            }
-          >
-            {autoRefresh ? (
-              <RiEyeLine className="w-4 h-4" />
-            ) : (
-              <RiEyeOffLine className="w-4 h-4" />
-            )}
-            {autoRefresh ? "Live" : "Paused"}
-          </button>
-          <button
-            onClick={load}
-            className="p-2 rounded-lg bg-slate-800 text-slate-400 border border-slate-700 hover:text-white"
-          >
-            <RiRefreshLine className="w-4 h-4" />
-          </button>
+        <div className="flex items-center gap-2 text-xs text-slate-500">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+          Live — {events.length} events
         </div>
-      </motion.div>
+      </div>
 
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
-        className="glass rounded-2xl p-4 flex items-center gap-4 glow-border"
-      >
-        <div className="flex items-center gap-2">
-          <div className="relative live-dot text-emerald-400">
-            <RiRadioButtonFill className="w-5 h-5" />
-          </div>
-          <span className="text-emerald-400 font-medium text-sm">
-            Scanning Downloads
-          </span>
+      {/* Filters */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="monitor-search">
+          <RiSearchLine className="w-4 h-4 text-slate-500" />
+          <input
+            type="text"
+            placeholder="Search files or paths..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="monitor-search-input"
+          />
         </div>
-        <div className="h-5 w-px bg-slate-700" />
-        <span className="text-sm text-slate-400">{events.length} events</span>
-        <div className="h-5 w-px bg-slate-700" />
-        <span className="text-sm text-slate-400">{scans.length} scanned</span>
-      </motion.div>
-
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.2 }}
-        className="flex flex-col sm:flex-row gap-3"
-      >
-        <div className="flex gap-2 flex-wrap">
-          <RiFilter3Line className="w-4 h-4 text-slate-500 mt-2" />
-          {["all", "created", "modified", "deleted", "moved"].map((t) => (
+        <div className="flex items-center gap-1 bg-slate-900/60 rounded-xl p-1 border border-white/5">
+          {["all", "create", "modify", "move", "transfer", "delete"].map((t) => (
             <button
               key={t}
-              onClick={() => setFilter(t)}
-              className={
-                "px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors " +
-                (filter === t
-                  ? t === "all"
-                    ? "bg-slate-700 text-white border-slate-600 filter-active"
-                    : EVT[t].bg + " " + EVT[t].color + " filter-active"
-                  : "bg-slate-900 text-slate-500 border-slate-800 hover:border-slate-700")
-              }
+              onClick={() => setTypeFilter(t)}
+              className={`monitor-filter-btn ${typeFilter === t ? "active" : ""}`}
             >
-              {t === "all" ? "All" : EVT[t].label} ({counts[t]})
+              {t === "all" ? "All" : t.charAt(0).toUpperCase() + t.slice(1)}
             </button>
           ))}
         </div>
-        <div className="relative sm:ml-auto">
-          <RiSearchLine className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-          <input
-            type="text"
-            placeholder="Search files..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full sm:w-64 bg-slate-900 border border-slate-800 rounded-lg pl-9 pr-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400/50"
-          />
-        </div>
-      </motion.div>
+      </div>
 
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.3 }}
-        className="glass rounded-2xl overflow-hidden glow-border"
-      >
-        <table className="w-full">
-          <thead>
-            <tr className="text-left text-xs text-slate-500 uppercase tracking-wider bg-slate-800/50">
-              <th className="px-5 py-3">File</th>
-              <th className="px-5 py-3">Event</th>
-              <th className="px-5 py-3">Scan</th>
-              <th className="px-5 py-3">Size</th>
-              <th className="px-5 py-3">Time</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-800/50">
-            {filtered.length === 0 ? (
+      {/* Event Table */}
+      <div className="monitor-table-card">
+        <div className="overflow-x-auto max-h-125 overflow-y-auto">
+          <table className="monitor-table">
+            <thead>
               <tr>
-                <td
-                  colSpan={5}
-                  className="px-5 py-12 text-center text-slate-500"
-                >
-                  <RiFolderOpenFill className="w-10 h-10 text-slate-700 mx-auto mb-3" />
-                  Download a file to see it here
-                </td>
+                <th>Event</th>
+                <th>File</th>
+                <th>Source → Destination</th>
+                <th>User</th>
+                <th>Size</th>
+                <th>Integrity</th>
+                <th>Time</th>
               </tr>
-            ) : (
-              filtered.map((ev) => {
-                const c = EVT[ev.event_type] || EVT.created;
-                const Icon = c.icon;
-                const verdict = scanMap.get(ev.filename) || "";
-                return (
-                  <tr
-                    key={ev.id}
-                    className="hover:bg-slate-800/30 transition-colors event-row-new"
-                  >
-                    <td className="px-5 py-3.5">
-                      <div className="flex items-center gap-3">
-                        <Icon className={"w-4 h-4 " + c.color} />
-                        <div>
-                          <p className="text-sm text-white font-medium">
-                            {ev.filename}
-                          </p>
-                          <p className="text-xs text-slate-600 truncate max-w-xs">
-                            {ev.file_path}
-                          </p>
+            </thead>
+            <tbody>
+              {filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="text-center text-slate-600 py-12">
+                    <RiFolderShield2Fill className="w-12 h-12 mx-auto mb-3 text-slate-700" />
+                    <p>No file events detected yet</p>
+                    <p className="text-xs mt-1">
+                      Move, copy, or download files in Downloads or Documents
+                    </p>
+                  </td>
+                </tr>
+              ) : (
+                filtered.map((e) => {
+                  const evt = eventTypeConfig[e.event_type] || eventTypeConfig.create;
+                  const integ = integrityConfig[e.integrity_status] || integrityConfig.unknown;
+                  const EvtIcon = evt.icon;
+                  const IntegIcon = integ.icon;
+
+                  return (
+                    <tr key={e.id} className="monitor-table-row">
+                      <td>
+                        <span className={`monitor-badge ${evt.color}`}>
+                          <EvtIcon className="w-3 h-3" />
+                          {evt.label}
+                        </span>
+                        {e.is_sensitive && (
+                          <span className="monitor-badge text-red-400 bg-red-400/10 ml-1">
+                            <RiAlertLine className="w-3 h-3" />
+                            Sensitive
+                          </span>
+                        )}
+                      </td>
+                      <td className="text-slate-200 font-medium truncate max-w-45">
+                        {e.filename}
+                      </td>
+                      <td className="text-xs">
+                        <div className="flex items-center gap-1 text-slate-400">
+                          <span className="truncate max-w-35" title={e.source_path || ""}>
+                            {e.source_path
+                              ? e.source_path.split("\\").slice(-2).join("\\")
+                              : "—"}
+                          </span>
+                          {(e.event_type === "move" || e.event_type === "transfer") && (
+                            <>
+                              <RiArrowRightLine className="w-3 h-3 text-cyan-400 shrink-0" />
+                              <span
+                                className="truncate max-w-35 text-cyan-400"
+                                title={e.dest_path || ""}
+                              >
+                                {e.dest_path
+                                  ? e.dest_path.split("\\").slice(-2).join("\\")
+                                  : "—"}
+                              </span>
+                            </>
+                          )}
                         </div>
-                      </div>
-                    </td>
-                    <td className="px-5 py-3.5">
-                      <span
-                        className={
-                          "text-xs font-medium px-2.5 py-1 rounded-full border " +
-                          c.bg +
-                          " " +
-                          c.color
-                        }
-                      >
-                        {c.label}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3.5">
-                      <VerdictBadge verdict={verdict} />
-                    </td>
-                    <td className="px-5 py-3.5 text-sm text-slate-400">
-                      {formatSize(ev.file_size)}
-                    </td>
-                    <td className="px-5 py-3.5 text-sm text-slate-400 whitespace-nowrap">
-                      {timeAgo(ev.timestamp)}
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </motion.div>
-    </div>
+                      </td>
+                      <td className="text-slate-400 text-xs">
+                        {e.username || "—"}
+                      </td>
+                      <td className="text-slate-400 text-xs">
+                        {formatSize(e.file_size)}
+                      </td>
+                      <td>
+                        <span className={`flex items-center gap-1 text-xs ${integ.color}`}>
+                          <IntegIcon className="w-3.5 h-3.5" />
+                          {integ.label}
+                        </span>
+                      </td>
+                      <td className="text-slate-500 text-xs whitespace-nowrap">
+                        {e.timestamp
+                          ? new Date(e.timestamp).toLocaleTimeString()
+                          : "—"}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </motion.div>
   );
 }

@@ -1,384 +1,392 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  RiAlarmWarningFill,
-  RiCheckDoubleFill,
-  RiErrorWarningFill,
-  RiCloseCircleFill,
-  RiShieldCheckFill,
-  RiRefreshLine,
-  RiTimeFill,
-  RiDeleteBin6Fill,
-  RiAlertFill,
-  RiInformationFill,
+  RiAlertLine,
+  RiCheckLine,
+  RiShieldCrossLine,
+  RiFolderWarningLine,
+  RiFileShieldLine,
+  RiUsbLine,
+  RiFilter3Line,
+  RiSafe2Line,
+  RiRestartLine,
+  RiDeleteBinLine,
 } from "react-icons/ri";
-import type { IconType } from "react-icons";
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  Cell,
-} from "recharts";
 
 interface Alert {
   id: number;
   severity: string;
+  alert_type: string;
   title: string;
   description: string;
   is_resolved: boolean;
-  created_at: string;
+  created_at: string | null;
 }
 
-const SEV: Record<
+interface QuarantinedFile {
+  id: number;
+  filename: string;
+  original_path: string;
+  file_size: number;
+  reason: string;
+  quarantined_at: string | null;
+}
+
+const alertTypeConfig: Record<
   string,
-  {
-    icon: IconType;
-    color: string;
-    bg: string;
-    border: string;
-    label: string;
-    bar: string;
-    css: string;
-  }
+  { icon: typeof RiAlertLine; color: string; label: string }
 > = {
-  dangerous: {
-    icon: RiCloseCircleFill,
-    color: "text-rose-400",
-    bg: "bg-rose-400/10",
-    border: "border-rose-400/30",
-    label: "Dangerous",
-    bar: "#f43f5e",
-    css: "alert-dangerous",
+  threat: {
+    icon: RiShieldCrossLine,
+    color: "text-red-400 bg-red-400/10 border-red-400/20",
+    label: "Threat",
   },
-  suspicious: {
-    icon: RiErrorWarningFill,
-    color: "text-amber-400",
-    bg: "bg-amber-400/10",
-    border: "border-amber-400/30",
-    label: "Suspicious",
-    bar: "#f59e0b",
-    css: "alert-suspicious",
+  unauthorized_move: {
+    icon: RiFolderWarningLine,
+    color: "text-amber-400 bg-amber-400/10 border-amber-400/20",
+    label: "Unauthorized Move",
   },
-  info: {
-    icon: RiInformationFill,
-    color: "text-cyan-400",
-    bg: "bg-cyan-400/10",
-    border: "border-cyan-400/30",
-    label: "Info",
-    bar: "#06b6d4",
-    css: "alert-info",
+  integrity_mismatch: {
+    icon: RiFileShieldLine,
+    color: "text-violet-400 bg-violet-400/10 border-violet-400/20",
+    label: "Tampering Mismatch",
+  },
+  exfiltration: {
+    icon: RiUsbLine,
+    color: "text-rose-400 bg-rose-400/10 border-rose-400/20",
+    label: "Exfiltration Risk",
   },
 };
 
-function timeAgo(ts: string) {
-  const s = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
-  if (s < 60) return s + "s ago";
-  const m = Math.floor(s / 60);
-  if (m < 60) return m + "m ago";
-  const h = Math.floor(m / 60);
-  if (h < 24) return h + "h ago";
-  return Math.floor(h / 24) + "d ago";
-}
+const severityConfig: Record<string, string> = {
+  critical: "text-red-400 bg-red-400/10",
+  high: "text-amber-400 bg-amber-400/10",
+  medium: "text-yellow-400 bg-yellow-400/10",
+  low: "text-cyan-400 bg-cyan-400/10",
+};
 
 export default function Alerts() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [quarantine, setQuarantine] = useState<QuarantinedFile[]>([]);
+  const [activeTab, setActiveTab] = useState<"alerts" | "quarantine">("alerts");
   const [filter, setFilter] = useState("active");
+  const [typeFilter, setTypeFilter] = useState("all");
   const [loading, setLoading] = useState(true);
 
-  const load = useCallback(() => {
-    const url =
-      filter === "active"
-        ? "/api/alerts?active_only=true"
-        : "/api/alerts?active_only=false";
-    fetch(url)
-      .then((r) => r.json())
-      .then((data) => {
-        setAlerts(data);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, [filter]);
+  const loadData = async () => {
+    try {
+      const [aRes, qRes] = await Promise.all([
+        fetch(
+          `http://127.0.0.1:8000/api/alerts?active_only=${filter === "active"}`
+        ),
+        fetch("http://127.0.0.1:8000/api/quarantine"),
+      ]);
+      setAlerts(await aRes.json());
+      setQuarantine(await qRes.json());
+    } catch {
+      /* ignore */
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    load();
-  }, [load]);
+    loadData();
+    const interval = setInterval(loadData, 3000);
+    return () => clearInterval(interval);
+  }, [filter]);
 
-  const dismiss = (id: number) => {
-    fetch("/api/alerts/" + id + "/resolve", { method: "POST" }).then(() =>
-      setAlerts(alerts.filter((a) => a.id !== id)),
+  const handleResolve = async (id: number) => {
+    try {
+      await fetch(`http://127.0.0.1:8000/api/alerts/${id}/resolve`, {
+        method: "POST",
+      });
+      setAlerts((prev) => prev.filter((a) => a.id !== id));
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const handleRestore = async (id: number) => {
+    try {
+      await fetch(`http://127.0.0.1:8000/api/quarantine/${id}/restore`, {
+        method: "POST",
+      });
+      setQuarantine((prev) => prev.filter((q) => q.id !== id));
+      loadData();
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const handleDeleteQuarantine = async (id: number) => {
+    try {
+      await fetch(`http://127.0.0.1:8000/api/quarantine/${id}`, {
+        method: "DELETE",
+      });
+      setQuarantine((prev) => prev.filter((q) => q.id !== id));
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const filteredAlerts = alerts.filter((a) => {
+    if (typeFilter === "all") return true;
+    return a.alert_type === typeFilter;
+  });
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="w-8 h-8 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+      </div>
     );
-  };
-
-  const dismissAll = () => {
-    Promise.all(
-      alerts.map((a) =>
-        fetch("/api/alerts/" + a.id + "/resolve", { method: "POST" }),
-      ),
-    ).then(() => setAlerts([]));
-  };
-
-  const counts = {
-    active: alerts.filter((a) => !a.is_resolved).length,
-    dangerous: alerts.filter((a) => a.severity === "dangerous").length,
-    suspicious: alerts.filter((a) => a.severity === "suspicious").length,
-  };
-
-  const chartData = [
-    { name: "Dangerous", count: counts.dangerous },
-    { name: "Suspicious", count: counts.suspicious },
-    {
-      name: "Clean",
-      count: Math.max(0, 10 - counts.dangerous - counts.suspicious),
-    },
-  ];
+  }
 
   return (
-    <div className="space-y-6">
-      <motion.div
-        initial={{ opacity: 0, x: -20 }}
-        animate={{ opacity: 1, x: 0 }}
-      >
-        <h1 className="text-3xl font-bold gradient-text">Threat Alerts</h1>
-        <p className="text-slate-400 mt-1">
-          Security alerts from your Downloads folder
-        </p>
-      </motion.div>
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="space-y-6"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-4">
+        <div>
+          <h1 className="text-2xl font-bold gradient-text">
+            Security Alerts &amp; Quarantine Vault
+          </h1>
+          <p className="text-sm text-slate-500 mt-1">
+            Real-time security violations and active threat neutralization
+          </p>
+        </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {(
-          [
-            {
-              label: "Active Alerts",
-              value: counts.active,
-              icon: RiAlarmWarningFill,
-              gradient: "from-rose-400 to-pink-500",
-              shadow: "shadow-rose-400/20",
-            },
-            {
-              label: "Dangerous",
-              value: counts.dangerous,
-              icon: RiCloseCircleFill,
-              gradient: "from-red-500 to-rose-600",
-              shadow: "shadow-red-400/20",
-            },
-            {
-              label: "Suspicious",
-              value: counts.suspicious,
-              icon: RiErrorWarningFill,
-              gradient: "from-amber-400 to-orange-500",
-              shadow: "shadow-amber-400/20",
-            },
-          ] as {
-            label: string;
-            value: number;
-            icon: IconType;
-            gradient: string;
-            shadow: string;
-          }[]
-        ).map((c, i) => (
-          <motion.div
-            key={c.label}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: i * 0.1 }}
-            whileHover={{ y: -3 }}
-            className="glass rounded-2xl p-5 glow-border relative overflow-hidden stat-card-glow"
+        {/* Tab Switcher */}
+        <div className="flex items-center gap-2 bg-slate-900/80 p-1 rounded-xl border border-white/5">
+          <button
+            onClick={() => setActiveTab("alerts")}
+            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+              activeTab === "alerts"
+                ? "bg-cyan-400/20 text-cyan-400 border border-cyan-400/30"
+                : "text-slate-400 hover:text-white"
+            }`}
           >
-            <div
-              className={
-                "absolute -top-8 -right-8 w-24 h-24 rounded-full bg-linear-to-br " +
-                c.gradient +
-                " opacity-10 blur-2xl"
-              }
-            />
-            <div className="flex items-center gap-3 relative">
-              <div
-                className={
-                  "p-2.5 rounded-xl bg-linear-to-br " +
-                  c.gradient +
-                  " shadow-lg " +
-                  c.shadow
-                }
-              >
-                <c.icon className="w-5 h-5 text-white" />
-              </div>
-              <div>
-                <p className="text-2xl font-bold text-white">{c.value}</p>
-                <p className="text-xs text-slate-400">{c.label}</p>
-              </div>
-            </div>
-          </motion.div>
-        ))}
+            <RiAlertLine className="w-4 h-4" />
+            Alerts ({alerts.length})
+          </button>
+          <button
+            onClick={() => setActiveTab("quarantine")}
+            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+              activeTab === "quarantine"
+                ? "bg-red-400/20 text-red-400 border border-red-400/30"
+                : "text-slate-400 hover:text-white"
+            }`}
+          >
+            <RiSafe2Line className="w-4 h-4" />
+            Quarantine Vault ({quarantine.length})
+          </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          className="glass rounded-2xl p-5 glow-border"
-        >
-          <h2 className="text-lg font-semibold text-white mb-4">
-            Threat Breakdown
-          </h2>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={chartData} barSize={40}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-              <XAxis dataKey="name" stroke="#64748b" fontSize={12} />
-              <YAxis stroke="#64748b" fontSize={12} allowDecimals={false} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "#0f172a",
-                  border: "1px solid #334155",
-                  borderRadius: "12px",
-                  color: "#e2e8f0",
-                }}
-              />
-              <Bar dataKey="count" radius={[8, 8, 0, 0]}>
-                {chartData.map((_entry, i) => (
-                  <Cell
-                    key={i}
-                    fill={i === 0 ? "#f43f5e" : i === 1 ? "#f59e0b" : "#10b981"}
-                  />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.4 }}
-          className="lg:col-span-2 glass rounded-2xl glow-border overflow-hidden"
-        >
-          <div className="flex items-center justify-between p-5 border-b border-white/5">
-            <div className="flex items-center gap-3">
-              <RiAlertFill className="w-5 h-5 text-rose-400" />
-              <h2 className="text-lg font-semibold text-white">Alert Feed</h2>
-              <span className="text-xs bg-rose-400/10 text-rose-400 px-2 py-0.5 rounded-full border border-rose-400/30">
-                {alerts.length}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="flex bg-slate-800 rounded-lg p-0.5">
-                {["active", "all"].map((f) => (
-                  <button
-                    key={f}
-                    onClick={() => setFilter(f)}
-                    className={
-                      "px-3 py-1.5 rounded-md text-xs font-medium transition-colors " +
-                      (filter === f
-                        ? "bg-slate-700 text-white"
-                        : "text-slate-500 hover:text-white")
-                    }
-                  >
-                    {f === "active" ? "Active" : "All"}
-                  </button>
-                ))}
-              </div>
-              {alerts.length > 0 && (
+      {activeTab === "alerts" ? (
+        <>
+          {/* Alerts Filter Row */}
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center gap-2 overflow-x-auto pb-1">
+              <RiFilter3Line className="w-4 h-4 text-slate-500 shrink-0" />
+              {[
+                { key: "all", label: "All Types" },
+                { key: "threat", label: "Threats" },
+                { key: "unauthorized_move", label: "Unauthorized Movement" },
+                { key: "integrity_mismatch", label: "Integrity Mismatch" },
+                { key: "exfiltration", label: "Exfiltration" },
+              ].map((t) => (
                 <button
-                  onClick={dismissAll}
-                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-rose-400/10 text-rose-400 border border-rose-400/30 hover:bg-rose-400/20 transition-colors clear-all-hover"
+                  key={t.key}
+                  onClick={() => setTypeFilter(t.key)}
+                  className={`alert-type-btn ${
+                    typeFilter === t.key ? "active" : ""
+                  }`}
                 >
-                  <RiDeleteBin6Fill className="w-3 h-3" /> Clear All
+                  {t.label}
                 </button>
-              )}
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2">
               <button
-                onClick={load}
-                className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-white/5 transition-colors"
+                onClick={() => setFilter("active")}
+                className={`alert-tab-btn ${
+                  filter === "active" ? "active" : ""
+                }`}
               >
-                <RiRefreshLine className="w-4 h-4" />
+                Active
+              </button>
+              <button
+                onClick={() => setFilter("all")}
+                className={`alert-tab-btn ${filter === "all" ? "active" : ""}`}
+              >
+                All History
               </button>
             </div>
           </div>
 
-          <div className="max-h-100 overflow-y-auto">
-            {loading ? (
-              <div className="p-8 text-center text-slate-500 shimmer rounded-lg m-4 h-20" />
-            ) : alerts.length === 0 ? (
-              <div className="p-12 text-center">
-                <RiShieldCheckFill className="w-16 h-16 text-emerald-400/30 mx-auto mb-3" />
-                <p className="text-lg font-medium text-emerald-400">
-                  All Clear!
-                </p>
-                <p className="text-sm text-slate-500 mt-1">
-                  No active threats detected
-                </p>
-              </div>
-            ) : (
-              <AnimatePresence>
-                {alerts.map((alert, i) => {
-                  const s = SEV[alert.severity] || SEV.info;
-                  const SIcon = s.icon;
+          {/* Alert Feed */}
+          <div className="space-y-3">
+            <AnimatePresence>
+              {filteredAlerts.length === 0 ? (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="alert-empty-card"
+                >
+                  <RiCheckLine className="w-12 h-12 text-emerald-400 mx-auto mb-2" />
+                  <p className="text-slate-300 font-semibold">All Clear!</p>
+                  <p className="text-slate-500 text-xs mt-1">
+                    No security alerts found in this view.
+                  </p>
+                </motion.div>
+              ) : (
+                filteredAlerts.map((alert) => {
+                  const cfg =
+                    alertTypeConfig[alert.alert_type] || alertTypeConfig.threat;
+                  const Icon = cfg.icon;
+
                   return (
                     <motion.div
                       key={alert.id}
+                      layout
                       initial={{ opacity: 0, x: -20 }}
                       animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: 20, height: 0 }}
-                      transition={{ delay: i * 0.05 }}
-                      whileHover={{ backgroundColor: "rgba(255,255,255,0.02)" }}
-                      className={
-                        "flex items-start gap-4 p-4 border-b border-white/5 transition-colors " +
-                        s.css +
-                        (alert.is_resolved ? " opacity-50" : "")
-                      }
+                      exit={{ opacity: 0, x: 20 }}
+                      className="alert-card p-4"
                     >
-                      <div
-                        className={
-                          "p-2 rounded-xl " + s.bg + " shrink-0 mt-0.5"
-                        }
-                      >
-                        <SIcon className={"w-5 h-5 " + s.color} />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="text-sm font-bold text-white truncate">
-                            {alert.title}
-                          </p>
-                          <span
-                            className={
-                              "text-[10px] font-bold px-2 py-0.5 rounded-full " +
-                              s.bg +
-                              " " +
-                              s.color +
-                              " border " +
-                              s.border
-                            }
-                          >
-                            {s.label}
-                          </span>
-                        </div>
-                        <p className="text-xs text-slate-400 mt-1">
-                          {alert.description}
-                        </p>
-                        <p className="text-xs text-slate-600 mt-1.5 flex items-center gap-1">
-                          <RiTimeFill className="w-3 h-3" />{" "}
-                          {timeAgo(alert.created_at)}
-                        </p>
-                      </div>
-                      {!alert.is_resolved && (
-                        <button
-                          onClick={() => dismiss(alert.id)}
-                          className="shrink-0 flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 hover:bg-emerald-400/10 hover:text-emerald-400 border border-slate-700 hover:border-emerald-400/30 transition-colors"
+                      <div className="flex items-start gap-4">
+                        <div
+                          className={`p-2.5 rounded-xl border ${cfg.color} shrink-0`}
                         >
-                          <RiCheckDoubleFill className="w-3 h-3" /> Dismiss
-                        </button>
-                      )}
+                          <Icon className="w-5 h-5" />
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap mb-1">
+                            <span
+                              className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider ${
+                                severityConfig[alert.severity] ||
+                                severityConfig.medium
+                              }`}
+                            >
+                              {alert.severity}
+                            </span>
+                            <span className="text-xs text-slate-500 font-medium">
+                              {cfg.label}
+                            </span>
+                            <span className="text-slate-600 text-xs">•</span>
+                            <span className="text-xs text-slate-500">
+                              {alert.created_at
+                                ? new Date(alert.created_at).toLocaleString()
+                                : "—"}
+                            </span>
+                          </div>
+
+                          <h3 className="text-sm font-semibold text-white">
+                            {alert.title}
+                          </h3>
+                          <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                            {alert.description}
+                          </p>
+                        </div>
+
+                        {!alert.is_resolved && (
+                          <button
+                            onClick={() => handleResolve(alert.id)}
+                            className="alert-resolve-btn shrink-0"
+                            title="Mark as Resolved"
+                          >
+                            <RiCheckLine className="w-4 h-4" />
+                            Resolve
+                          </button>
+                        )}
+                      </div>
                     </motion.div>
                   );
-                })}
-              </AnimatePresence>
-            )}
+                })
+              )}
+            </AnimatePresence>
           </div>
-        </motion.div>
-      </div>
-    </div>
+        </>
+      ) : (
+        /* Quarantine Vault Section */
+        <div className="space-y-3">
+          <AnimatePresence>
+            {quarantine.length === 0 ? (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="alert-empty-card"
+              >
+                <RiSafe2Line className="w-12 h-12 text-slate-600 mx-auto mb-2" />
+                <p className="text-slate-300 font-semibold">
+                  Vault Empty
+                </p>
+                <p className="text-slate-500 text-xs mt-1">
+                  No files currently isolated in quarantine.
+                </p>
+              </motion.div>
+            ) : (
+              quarantine.map((file) => (
+                <motion.div
+                  key={file.id}
+                  layout
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  className="alert-card p-4 border-l-4 border-l-red-500"
+                >
+                  <div className="flex items-center justify-between flex-wrap gap-4">
+                    <div className="flex items-center gap-3.5 min-w-0">
+                      <div className="p-2.5 rounded-xl bg-red-400/10 text-red-400 border border-red-400/20 shrink-0">
+                        <RiSafe2Line className="w-5 h-5" />
+                      </div>
+
+                      <div className="min-w-0">
+                        <h3 className="text-sm font-bold text-white truncate">
+                          {file.filename}
+                        </h3>
+                        <p className="text-xs text-slate-400 mt-0.5 truncate max-w-lg">
+                          Original Path: {file.original_path}
+                        </p>
+                        <p className="text-[11px] text-red-400 mt-1 italic">
+                          Reason: {file.reason}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() => handleRestore(file.id)}
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold text-cyan-400 bg-cyan-400/10 border border-cyan-400/20 hover:bg-cyan-400/20 transition-all"
+                        title="Restore file back to original path"
+                      >
+                        <RiRestartLine className="w-3.5 h-3.5" />
+                        Restore
+                      </button>
+
+                      <button
+                        onClick={() => handleDeleteQuarantine(file.id)}
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold text-red-400 bg-red-400/10 border border-red-400/20 hover:bg-red-400/20 transition-all"
+                        title="Permanently Delete file from disk"
+                      >
+                        <RiDeleteBinLine className="w-3.5 h-3.5" />
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                </motion.div>
+              ))
+            )}
+          </AnimatePresence>
+        </div>
+      )}
+    </motion.div>
   );
 }

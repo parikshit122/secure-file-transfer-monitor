@@ -1,5 +1,83 @@
-.alert-dangerous { border-left: 3px solid #f43f5e; }
-.alert-suspicious { border-left: 3px solid #f59e0b; }
-.alert-info { border-left: 3px solid #06b6d4; }
-.alert-dismiss { animation: fadeSlideUp 0.3s ease-out reverse; }
-.clear-all-hover:hover { box-shadow: 0 0 12px rgba(244, 63, 94, 0.2); }
+/* ── Alerts Page ─────────────────────────────── */
+
+.alert-card {
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 1rem;
+  transition: all 0.2s ease;
+}
+
+.alert-card:hover {
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+.alert-empty-card {
+  background: rgba(15, 23, 42, 0.4);
+  border: 1px dashed rgba(255, 255, 255, 0.1);
+  border-radius: 1rem;
+  padding: 3rem;
+  text-align: center;
+}
+
+.alert-tab-btn {
+  padding: 6px 14px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  transition: all 0.2s ease;
+}
+
+.alert-tab-btn:hover {
+  color: #e2e8f0;
+}
+
+.alert-tab-btn.active {
+  background: rgba(6, 182, 212, 0.15);
+  color: #22d3ee;
+  border-color: rgba(6, 182, 212, 0.3);
+}
+
+.alert-type-btn {
+  padding: 5px 12px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #64748b;
+  background: rgba(15, 23, 42, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+
+.alert-type-btn:hover {
+  color: #e2e8f0;
+}
+
+.alert-type-btn.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8fafc;
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.alert-resolve-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  transition: all 0.2s ease;
+}
+
+.alert-resolve-btn:hover {
+  background: rgba(16, 185, 129, 0.2);
+}

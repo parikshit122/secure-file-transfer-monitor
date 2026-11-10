@@ -1,261 +1,157 @@
 import os
-import time
 import hashlib
-from pathlib import Path
-from dataclasses import dataclass, field
-from typing import Optional
+from typing import List
+from dataclasses import dataclass
+from sqlalchemy.orm import Session
+from app.core.models import Policy
 
-try:
-    import blake3
 
-    HAS_BLAKE3 = True
-except ImportError:
-    HAS_BLAKE3 = False
+@dataclass
+class ScanResultDTO:
+    filename: str
+    file_size: int
+    file_hash: str
+    file_type: str
+    verdict: str  # clean, suspicious, dangerous
+    threat_score: int  # 0 to 100
+    findings: str
+    scanned_in_ms: float
 
-DANGEROUS_EXT = {
+
+MAGIC_SIGNATURES = {
+    b"MZ": "Windows Executable / DLL",
+    b"\x7fELF": "Linux Executable",
+    b"\xca\xfe\xba\xbe": "Java Bytecode / Mach-O",
+    b"\xfe\xed\xfa\xce": "Mach-O Executable",
+    b"PK\x03\x04": "Zip Archive",
+    b"%PDF": "PDF Document",
+}
+
+DANGEROUS_EXTENSIONS = {
     ".exe",
     ".bat",
     ".cmd",
     ".ps1",
+    ".msi",
     ".vbs",
-    ".vbe",
-    ".js",
-    ".jse",
-    ".wsf",
-    ".wsh",
     ".scr",
     ".pif",
-    ".com",
+    ".application",
+    ".gadget",
     ".hta",
-    ".msi",
-    ".msp",
-    ".reg",
-    ".dll",
-}
-
-SUSPICIOUS_EXT = {
-    ".docm",
-    ".xlsm",
-    ".pptm",
+    ".cpl",
+    ".msc",
     ".jar",
-    ".sh",
-    ".py",
-    ".pyw",
-    ".iso",
-    ".img",
-    ".lnk",
-    ".url",
-}
-
-MAGIC_MAP = {
-    b"%PDF": "pdf",
-    b"PK\x03\x04": "zip/office",
-    b"\x89PNG": "png",
-    b"\xff\xd8\xff": "jpeg",
-    b"GIF8": "gif",
-    b"BM": "bmp",
-    b"\x1f\x8b": "gzip",
-    b"Rar!": "rar",
-    b"7z\xbc\xaf": "7z",
 }
 
 
-@dataclass
-class ScanResult:
-    filepath: str
-    filename: str
-    file_size: int
-    file_hash: str
-    verdict: str
-    threat_score: int
-    findings: list = field(default_factory=list)
-    file_type: str = "unknown"
-    scanned_in_ms: float = 0.0
+def scan_bytes(
+    filename: str,
+    data: bytes,
+    db: Session | None = None,
+) -> ScanResultDTO:
+    import time
 
-
-def compute_hash(filepath: str, max_bytes: int = 10_485_760) -> str:
-    h = blake3.blake3() if HAS_BLAKE3 else hashlib.sha256()
-    file_size = os.path.getsize(filepath)
-    with open(filepath, "rb") as f:
-        if file_size <= max_bytes:
-            while True:
-                chunk = f.read(262144)
-                if not chunk:
-                    break
-                h.update(chunk)
-        else:
-            head = f.read(max_bytes // 2)
-            h.update(head)
-            f.seek(-(max_bytes // 2), 2)
-            tail = f.read(max_bytes // 2)
-            h.update(tail)
-            h.update(str(file_size).encode())
-    return h.hexdigest()
-
-
-def detect_type(filepath: str) -> str:
-    try:
-        with open(filepath, "rb") as f:
-            header = f.read(16)
-        for magic, ftype in MAGIC_MAP.items():
-            if header.startswith(magic):
-                return ftype
-        if header[:2] == b"MZ":
-            return "executable"
-    except Exception:
-        pass
-    return "unknown"
-
-
-def scan_file(filepath: str) -> Optional[ScanResult]:
     start = time.time()
-    p = Path(filepath)
-    if not p.exists() or not p.is_file():
-        return None
 
-    filename = p.name
-    file_size = p.stat().st_size
-    ext = p.suffix.lower()
-    findings = []
-    score = 0
-
-    try:
-        file_hash = compute_hash(filepath)
-    except Exception:
-        file_hash = "error"
-
-    detected = detect_type(filepath)
-
-    if ext in DANGEROUS_EXT:
-        score += 40
-        findings.append(f"Dangerous file type: {ext}")
-    if ext in SUSPICIOUS_EXT:
-        score += 20
-        findings.append(f"Suspicious file type: {ext}")
-
-    parts = filename.split(".")
-    if len(parts) >= 3:
-        inner = "." + parts[-2].lower()
-        if (
-            inner in {".pdf", ".doc", ".docx", ".jpg", ".png", ".txt"}
-            and ext in DANGEROUS_EXT
-        ):
-            score += 30
-            findings.append(f"Double extension trick: {inner}{ext}")
-
-    if detected == "executable" and ext not in {".exe", ".dll", ".sys", ".com", ".scr"}:
-        score += 35
-        findings.append(f"Hidden executable disguised as {ext}")
-    if detected == "zip/office" and ext in DANGEROUS_EXT:
-        score += 25
-        findings.append("Archive/executable mismatch")
-    if file_size == 0:
-        score += 10
-        findings.append("Empty file (0 bytes)")
-    if file_size > 1_073_741_824:
-        score += 15
-        findings.append("Extremely large file (>1GB)")
-
-    try:
-        zone = Path(filepath + ":Zone.Identifier")
-        if zone.exists():
-            findings.append("Downloaded from internet")
-            score += 5
-    except Exception:
-        pass
-
-    score = min(score, 100)
-    if score >= 50:
-        verdict = "dangerous"
-    elif score >= 20:
-        verdict = "suspicious"
-    else:
-        verdict = "clean"
-        if not findings:
-            findings.append("No threats detected")
-
-    return ScanResult(
-        filepath=str(filepath),
-        filename=filename,
-        file_size=file_size,
-        file_hash=file_hash,
-        verdict=verdict,
-        threat_score=score,
-        findings=findings,
-        file_type=detected,
-        scanned_in_ms=round((time.time() - start) * 1000, 2),
-    )
-
-
-def scan_bytes(filename: str, data: bytes) -> ScanResult:
-    """Scan file directly from memory — no disk writes. Used for uploads."""
-    start = time.time()
     file_size = len(data)
-    ext = Path(filename).suffix.lower()
-    findings = []
-    score = 0
+    file_hash = hashlib.blake2b(data, digest_size=32).hexdigest()
+    ext = os.path.splitext(filename)[1].lower()
 
-    h = blake3.blake3() if HAS_BLAKE3 else hashlib.sha256()
-    h.update(data)
-    file_hash = h.hexdigest()
-
-    detected = "unknown"
-    header = data[:16]
-    for magic, ftype in MAGIC_MAP.items():
-        if header.startswith(magic):
-            detected = ftype
+    # Detect file type via magic bytes
+    file_type = "unknown"
+    for signature, description in MAGIC_SIGNATURES.items():
+        if data.startswith(signature):
+            file_type = description
             break
-    if header[:2] == b"MZ":
-        detected = "executable"
+    if file_type == "unknown":
+        file_type = ext if ext else "binary/text"
 
-    if ext in DANGEROUS_EXT:
-        score += 40
-        findings.append(f"Dangerous file type: {ext}")
-    if ext in SUSPICIOUS_EXT:
-        score += 20
-        findings.append(f"Suspicious file type: {ext}")
+    score = 0
+    findings_list: List[str] = []
 
+    # ── HEURISTIC RULE 1: Dangerous Executable Extension ──────
+    if ext in DANGEROUS_EXTENSIONS:
+        score += 50
+        findings_list.append(f"Dangerous executable extension ('{ext}')")
+
+    # ── HEURISTIC RULE 2: Double Extension Trick (e.g. pdf.exe) ──
     parts = filename.split(".")
-    if len(parts) >= 3:
-        inner = "." + parts[-2].lower()
-        if (
-            inner in {".pdf", ".doc", ".docx", ".jpg", ".png", ".txt"}
-            and ext in DANGEROUS_EXT
-        ):
-            score += 30
-            findings.append(f"Double extension trick: {inner}{ext}")
+    if len(parts) > 2 and f".{parts[-1].lower()}" in DANGEROUS_EXTENSIONS:
+        score += 40
+        findings_list.append(
+            f"Double extension trick detected ('{parts[-2]}.{parts[-1]}')"
+        )
 
-    if detected == "executable" and ext not in {".exe", ".dll", ".sys", ".com", ".scr"}:
-        score += 35
-        findings.append(f"Hidden executable disguised as {ext}")
-    if detected == "zip/office" and ext in DANGEROUS_EXT:
-        score += 25
-        findings.append("Archive/executable mismatch")
+    # ── HEURISTIC RULE 3: Executable Header Mismatch ──────────
+    if data.startswith(b"MZ") and ext in [
+        ".pdf",
+        ".docx",
+        ".xlsx",
+        ".png",
+        ".jpg",
+        ".txt",
+    ]:
+        score += 60
+        findings_list.append(
+            f"HEADER MISMATCH: Executable signature ('MZ') disguised as document '{ext}'"
+        )
+
+    # ── HEURISTIC RULE 4: Zero-byte file ─────────────────────
     if file_size == 0:
         score += 10
-        findings.append("Empty file (0 bytes)")
-    if file_size > 1_073_741_824:
-        score += 15
-        findings.append("Extremely large file (>1GB)")
+        findings_list.append("Zero-byte empty file")
 
-    score = min(score, 100)
+    # ── DB POLICY OVERRIDES & CUSTOM RULES ───────────────────
+    if db:
+        try:
+            active_policies = (
+                db.query(Policy).filter(Policy.enabled == True).all()
+            )
+            for p in active_policies:
+                if p.policy_type == "whitelist" and p.parameters:
+                    allowed_exts = [
+                        e.strip().lower() for e in p.parameters.split(",")
+                    ]
+                    if ext in allowed_exts:
+                        score = 0
+                        findings_list = [
+                            f"Whitelisted extension ({ext}) by policy '{p.name}'"
+                        ]
+                        break
+                elif p.policy_type == "size_limit" and p.parameters:
+                    try:
+                        max_bytes = int(p.parameters.strip())
+                        if file_size > max_bytes:
+                            score += 25
+                            findings_list.append(
+                                f"Exceeds policy '{p.name}' size limit"
+                            )
+                    except ValueError:
+                        pass
+        except Exception:
+            pass
+
+    # Verdict
     if score >= 50:
         verdict = "dangerous"
     elif score >= 20:
         verdict = "suspicious"
     else:
         verdict = "clean"
-        if not findings:
-            findings.append("No threats detected")
 
-    return ScanResult(
-        filepath="upload",
+    findings = (
+        "; ".join(findings_list) if findings_list else "No threat indicators found"
+    )
+    duration_ms = round((time.time() - start) * 1000, 2)
+
+    return ScanResultDTO(
         filename=filename,
         file_size=file_size,
         file_hash=file_hash,
+        file_type=file_type,
         verdict=verdict,
         threat_score=score,
         findings=findings,
-        file_type=detected,
-        scanned_in_ms=round((time.time() - start) * 1000, 2),
+        scanned_in_ms=duration_ms,
     )
