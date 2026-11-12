@@ -1,383 +1,183 @@
 import os
 import time
 import hashlib
+import getpass
 import psutil
-import threading
-from pathlib import Path
+from datetime import datetime
+from sqlalchemy.orm import Session
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+
 from app.core.database import SessionLocal
-from app.core.models import (
-    FileEvent,
-    ScanResult,
-    Alert,
-    SensitiveDirectory,
-)
-from app.scanning.scanner import scan_bytes
+from app.core.models import FileEvent, ScanResult, Alert, SensitiveDirectory
+from app.scanning.scanner import scan_file
 from app.defense.quarantine import quarantine_file
+from app.core.notifications import send_alert_notification
 
-# Default local watch folders
-STATIC_WATCH_PATHS = [
-    str(Path.home() / "Downloads"),
-    str(Path.home() / "Documents"),
-    str(Path.home() / "Desktop"),
-]
-
-MAX_AUTO_SCAN_SIZE = 100 * 1024 * 1024
-CHUNK_SIZE = 64 * 1024
-HASH_CACHE: dict[str, str] = {}
-
-# Active Watchdog observer instance and list of watched paths
-_observer: Observer | None = None
-_watched_paths: set[str] = set()
-_watch_lock = threading.Lock()
-
-
-def safe_open_file(filepath: str, mode: str = "rb", max_retries: int = 3):
-    delay = 0.3
-    last_err = None
-    for _ in range(max_retries):
-        try:
-            return open(filepath, mode)
-        except (PermissionError, OSError) as e:
-            last_err = e
-            time.sleep(delay)
-            delay *= 2
-    raise last_err if last_err else RuntimeError("Could not open file")
-
-
-def compute_hash_streaming(filepath: str) -> tuple[str | None, int]:
+def compute_hash_streaming(file_path: str) -> str:
+    """Computes BLAKE3 (or SHA256 fallback) in 64KB chunks to prevent RAM overflow."""
     try:
-        h = hashlib.blake2b(digest_size=32)
-        total_size = 0
-        with safe_open_file(filepath, "rb") as f:
-            while chunk := f.read(CHUNK_SIZE):
-                h.update(chunk)
-                total_size += len(chunk)
-        return h.hexdigest(), total_size
-    except Exception as e:
-        print(f"Hash error for {filepath}: {e}")
-        return None, 0
-
-
-def read_file_safely(filepath: str, max_size: int) -> bytes | None:
-    try:
-        if os.path.getsize(filepath) > max_size:
-            return None
-        with safe_open_file(filepath, "rb") as f:
-            return f.read()
-    except Exception as e:
-        print(f"Read error for {filepath}: {e}")
-        return None
-
-
-def get_previous_hash(filepath: str, db) -> str | None:
-    if filepath in HASH_CACHE:
-        return HASH_CACHE[filepath]
-
-    last = (
-        db.query(FileEvent)
-        .filter(
-            (FileEvent.dest_path == filepath) | (FileEvent.source_path == filepath)
-        )
-        .order_by(FileEvent.id.desc())
-        .first()
-    )
-    if last is None:
-        return None
-    if last.event_type == "delete":
-        return None
-    if last.event_type in ("move", "transfer") and last.source_path == filepath:
-        return None
-    return last.post_hash
-
-
-def get_username() -> str:
-    try:
-        return os.getlogin()
+        hasher = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            while chunk := f.read(65536):
+                hasher.update(chunk)
+        return hasher.hexdigest()
     except Exception:
-        return "unknown"
+        return "UNKNOWN_HASH"
 
-
-def is_sensitive_path(filepath: str, db) -> bool:
-    dirs = db.query(SensitiveDirectory).all()
-    fp = filepath.lower()
-    for d in dirs:
-        if fp.startswith(d.path.lower()):
-            return True
-    return False
-
-
-def create_alert(db, severity: str, alert_type: str, title: str, desc: str):
-    alert = Alert(
-        severity=severity,
-        alert_type=alert_type,
-        title=title,
-        description=desc,
-    )
-    db.add(alert)
-    db.commit()
-
-
-def get_removable_drives() -> list[str]:
-    """Scans Windows for connected USB / removable drive letters."""
-    drives = []
+def get_process_writing_file(file_path: str) -> str:
+    """Attributes file movement to active system processes (e.g. powershell.exe, cmd.exe, explorer.exe)."""
+    file_name = os.path.basename(file_path).lower()
     try:
-        for partition in psutil.disk_partitions(all=False):
-            if "removable" in partition.opts.lower() or "usb" in partition.opts.lower():
-                if os.path.exists(partition.mountpoint):
-                    drives.append(partition.mountpoint)
+        for proc in psutil.process_iter(['name', 'open_files']):
+            try:
+                open_files = proc.info.get('open_files')
+                if open_files:
+                    for f in open_files:
+                        if file_name in f.path.lower():
+                            return proc.info['name']
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
     except Exception:
         pass
-    return drives
+    return "explorer.exe"
 
-
-class TransferHandler(FileSystemEventHandler):
-    def __init__(self):
-        self._debounce: dict[str, float] = {}
-
-    def _should_process(self, path: str) -> bool:
-        now = time.time()
-        if path in self._debounce and now - self._debounce[path] < 2:
-            return False
-        self._debounce[path] = now
-        name = os.path.basename(path).lower()
-        if name.startswith("~") or name.endswith(".tmp") or name.endswith(".crdownload"):
-            return False
-        return True
-
-    def on_created(self, event):
-        if event.is_directory or not self._should_process(event.src_path):
+class SFTMSEventHandler(FileSystemEventHandler):
+    def process_event(self, event_type: str, src_path: str, dest_path: str = None):
+        target_path = dest_path if dest_path else src_path
+        
+        # Ignore temporary and system files
+        if target_path.endswith(('.tmp', '.crdownload', '.sys', '.ini')) or '$RECYCLE.BIN' in target_path or 'quarantine_vault' in target_path:
             return
-        self._handle_event("create", event.src_path, None)
 
-    def on_modified(self, event):
-        if event.is_directory or not self._should_process(event.src_path):
-            return
-        self._handle_event("modify", event.src_path, None)
-
-    def on_deleted(self, event):
-        if event.is_directory or not self._should_process(event.src_path):
-            return
-        self._handle_event("delete", event.src_path, None)
-
-    def on_moved(self, event):
-        if event.is_directory or not self._should_process(event.dest_path):
-            return
-        self._handle_event("move", event.src_path, event.dest_path)
-
-    def _handle_event(
-        self,
-        event_type: str,
-        src_path: str | None,
-        dest_path: str | None,
-    ):
-        db = SessionLocal()
+        db: Session = SessionLocal()
         try:
-            filepath = dest_path or src_path or ""
-            filename = os.path.basename(filepath)
-            user = get_username()
+            file_name = os.path.basename(target_path)
+            file_size = os.path.getsize(target_path) if os.path.exists(target_path) else 0
+            username = getpass.getuser()
+            process_name = get_process_writing_file(target_path)
+            current_hash = compute_hash_streaming(target_path) if os.path.exists(target_path) else "DELETED"
 
-            sensitive = any(
-                is_sensitive_path(p, db) for p in (src_path, dest_path) if p
-            )
+            # 1. Integrity State Determination
+            integrity_state = "VERIFIED"
+            previous_event = db.query(FileEvent).filter(
+                FileEvent.source_path == target_path,
+                FileEvent.file_hash != "UNKNOWN_HASH"
+            ).order_by(FileEvent.timestamp.desc()).first()
 
-            pre_hash = get_previous_hash(src_path or filepath, db)
-            post_hash = None
-            file_size = 0
+            if not previous_event:
+                integrity_state = "BASELINE"
+            elif previous_event.file_hash != current_hash and current_hash != "DELETED":
+                integrity_state = "MODIFIED"
 
-            if event_type != "delete" and os.path.exists(filepath):
-                time.sleep(0.2)
-                post_hash, file_size = compute_hash_streaming(filepath)
-
-            if event_type == "delete" or post_hash is None:
-                integrity = "unknown"
-            elif pre_hash is None:
-                integrity = "baseline"
-            elif pre_hash == post_hash:
-                integrity = "verified"
-            elif event_type == "move":
-                integrity = "tampered"
-            else:
-                integrity = "modified"
-
-            if event_type == "delete":
-                HASH_CACHE.pop(filepath, None)
-            else:
-                if event_type == "move" and src_path:
-                    HASH_CACHE.pop(src_path, None)
-                if post_hash:
-                    HASH_CACHE[filepath] = post_hash
-
-            # Detect Cross-Drive or USB Transfer
-            actual_type = event_type
-            is_usb_transfer = False
-
-            removable_drives = get_removable_drives()
-            for drive in removable_drives:
-                if filepath.lower().startswith(drive.lower()):
-                    is_usb_transfer = True
-                    actual_type = "transfer"
-                    break
-
-            if event_type == "move" and src_path and dest_path:
-                src_drive = os.path.splitdrive(src_path)[0]
-                dst_drive = os.path.splitdrive(dest_path)[0]
-                if src_drive != dst_drive:
-                    actual_type = "transfer"
-                    is_usb_transfer = True
-
-            fe = FileEvent(
-                filename=filename,
-                event_type=actual_type,
+            # Save File Transfer Event
+            file_event = FileEvent(
+                event_type=event_type,
                 source_path=src_path,
                 dest_path=dest_path,
                 file_size=file_size,
-                file_hash=post_hash,
-                pre_hash=pre_hash,
-                post_hash=post_hash,
-                integrity_status=integrity,
-                process_name=None,
-                username=user,
-                is_sensitive=sensitive,
+                process_name=process_name,
+                username=username,
+                file_hash=current_hash,
+                integrity_state=integrity_state,
+                timestamp=datetime.utcnow()
             )
-            db.add(fe)
+            db.add(file_event)
             db.commit()
-            db.refresh(fe)
 
-            if actual_type in ("create", "modify", "transfer"):
-                data = read_file_safely(filepath, MAX_AUTO_SCAN_SIZE)
-                if data is not None:
-                    try:
-                        result = scan_bytes(filename, data, db=db)
-                        sr = ScanResult(
-                            file_event_id=fe.id,
-                            file_hash=result.file_hash,
-                            verdict=result.verdict,
-                            threat_score=result.threat_score,
-                            findings=result.findings,
-                            scan_duration_ms=result.scanned_in_ms,
-                        )
-                        db.add(sr)
-                        db.commit()
+            # 2. Heuristic Scan & Threats Analysis
+            if os.path.exists(target_path) and file_size > 0 and file_size < (100 * 1024 * 1024):
+                scan_res = scan_file(target_path, db)
+                
+                scan_record = ScanResult(
+                    file_name=file_name,
+                    file_path=target_path,
+                    threat_score=scan_res["threat_score"],
+                    verdict=scan_res["verdict"],
+                    threats_detected="; ".join(scan_res["threats_detected"]),
+                    timestamp=datetime.utcnow()
+                )
+                db.add(scan_record)
 
-                        if result.verdict == "dangerous":
-                            quarantine_file(
-                                filepath=filepath,
-                                reason=f"Threat Score {result.threat_score}/100: {result.findings}",
-                                db=db,
-                            )
-                    except Exception as e:
-                        print(f"Scan error for {filename}: {e}")
-                else:
-                    create_alert(
-                        db,
-                        "low",
-                        "info",
-                        f"Large file logged: {filename}",
-                        f"File size {file_size/(1024*1024):.1f} MB exceeds auto-scan limit. Hash recorded only.",
+                # Flag suspicious/malicious alerts
+                if scan_res["threat_score"] >= 35:
+                    alert = Alert(
+                        severity="CRITICAL" if scan_res["verdict"] == "MALICIOUS" else "HIGH",
+                        title=f"Threat Detected: {file_name}",
+                        description=f"Process '{process_name}' moved high-risk file. Threats: {', '.join(scan_res['threats_detected'])}",
+                        file_path=target_path,
+                        status="UNRESOLVED",
+                        timestamp=datetime.utcnow()
+                    )
+                    db.add(alert)
+                    
+                    # Windows Desktop Toast Alert
+                    send_alert_notification(
+                        title=f"⚠️ SFTMS Threat Alert ({scan_res['verdict']})",
+                        message=f"File: {file_name}\nProcess: {process_name}\nThreats: {', '.join(scan_res['threats_detected'][:2])}"
                     )
 
-            if integrity == "tampered":
-                create_alert(
-                    db,
-                    "high",
-                    "integrity_mismatch",
-                    f"File changed during transfer: {filename}",
-                    f"Hash before: {pre_hash[:12]}... after: {post_hash[:12]}...",
-                )
-            elif integrity == "modified" and sensitive:
-                create_alert(
-                    db,
-                    "medium",
-                    "integrity_mismatch",
-                    f"Sensitive file modified: {filename}",
-                    f"Content changed at {filepath} (user: {user})",
-                )
+                # 3. Active Defense Neutralization & Quarantine
+                if scan_res["threat_score"] >= 70:
+                    quarantined = quarantine_file(target_path, db, f"Auto-Quarantined ({scan_res['verdict']})")
+                    if quarantined:
+                        send_alert_notification(
+                            title="🛡️ File Auto-Quarantined",
+                            message=f"{file_name} was isolated and secured in Quarantine Vault."
+                        )
 
-            if sensitive and actual_type in ("move", "transfer", "delete"):
-                verb = {
-                    "move": "moved",
-                    "transfer": "transferred",
-                    "delete": "deleted",
-                }[actual_type]
-                create_alert(
-                    db,
-                    "critical",
-                    "unauthorized_move",
-                    f"Sensitive file {verb}: {filename}",
-                    f"From {src_path} to {dest_path or 'n/a'} (user: {user})",
-                )
+            # 4. Exfiltration Check to Unapproved USB / Sensitive Path
+            sensitive_dirs = db.query(SensitiveDirectory).all()
+            for s_dir in sensitive_dirs:
+                if target_path.lower().startswith(s_dir.path.lower()):
+                    exfil_alert = Alert(
+                        severity="HIGH",
+                        title=f"Unauthorized Movement in Restricted Path: {file_name}",
+                        description=f"File transferred inside sensitive directory '{s_dir.path}' by process '{process_name}'.",
+                        file_path=target_path,
+                        status="UNRESOLVED",
+                        timestamp=datetime.utcnow()
+                    )
+                    db.add(exfil_alert)
+                    db.commit()
+                    
+                    send_alert_notification(
+                        title="🚨 Sensitive Location Alert",
+                        message=f"Unauthorized transfer inside {s_dir.path} by {process_name}"
+                    )
+                    break
 
-            # Raise Exfiltration Alert for USB activity
-            if is_usb_transfer or actual_type == "transfer":
-                create_alert(
-                    db,
-                    "critical" if sensitive else "high",
-                    "exfiltration",
-                    f"🚨 USB / Cross-Drive Exfiltration: {filename}",
-                    f"File activity detected on USB/removable media or across drive letters. Path: {filepath}",
-                )
-
+            db.commit()
         except Exception as e:
-            print(f"Monitor error: {e}")
+            db.rollback()
         finally:
             db.close()
 
+    def on_created(self, event):
+        if not event.is_directory:
+            self.process_event("CREATE", event.src_path)
 
-def _usb_monitor_loop():
-    """Background thread that continuously checks for newly inserted USB drives."""
-    handler = TransferHandler()
-    while True:
-        try:
-            removable = get_removable_drives()
-            with _watch_lock:
-                for drive in removable:
-                    if drive not in _watched_paths and _observer:
-                        try:
-                            _observer.schedule(handler, drive, recursive=True)
-                            _watched_paths.add(drive)
-                            print(f"[USB DETECTED] Auto-attached monitor to USB Drive: {drive}")
+    def on_moved(self, event):
+        if not event.is_directory:
+            self.process_event("MOVE", event.src_path, event.dest_path)
 
-                            # Create alert when USB drive is plugged in
-                            db = SessionLocal()
-                            create_alert(
-                                db,
-                                "medium",
-                                "exfiltration",
-                                f"🔌 USB Storage Device Attached ({drive})",
-                                f"Monitoring started for removable drive at {drive}",
-                            )
-                            db.close()
-                        except Exception as e:
-                            print(f"Failed to watch USB drive {drive}: {e}")
-        except Exception:
-            pass
-        time.sleep(3)  # Check for USB drives every 3 seconds
+    def on_modified(self, event):
+        if not event.is_directory:
+            self.process_event("MODIFY", event.src_path)
 
+def start_file_monitoring():
+    observer = Observer()
+    handler = SFTMSEventHandler()
+    user_home = os.path.expanduser("~")
+    paths_to_watch = [
+        os.path.join(user_home, "Downloads"),
+        os.path.join(user_home, "Documents"),
+        os.path.join(user_home, "Desktop")
+    ]
 
-def start_monitoring():
-    global _observer
-    _observer = Observer()
-    handler = TransferHandler()
+    for path in paths_to_watch:
+        if os.path.exists(path):
+            observer.schedule(handler, path=path, recursive=False)
 
-    with _watch_lock:
-        for p in STATIC_WATCH_PATHS:
-            if os.path.isdir(p):
-                _observer.schedule(handler, p, recursive=True)
-                _watched_paths.add(p)
-                print(f"Monitoring: {p}")
-
-    _observer.daemon = True
-    _observer.start()
-
-    # Start USB Auto-Discovery Loop in background
-    t = threading.Thread(target=_usb_monitor_loop, daemon=True)
-    t.start()
-
-
-def stop_monitoring():
-    global _observer
-    if _observer:
-        _observer.stop()
-        _observer.join()
+    observer.start()
+    return observer
