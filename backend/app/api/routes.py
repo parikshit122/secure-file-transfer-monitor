@@ -1,351 +1,265 @@
-from fastapi import APIRouter, Depends, UploadFile, File
+import os
+import shutil
+import tempfile
+import csv
+import io
+from datetime import datetime, timedelta
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Response
 from sqlalchemy.orm import Session
+from sqlalchemy import func
+
 from app.core.database import get_db
-from app.core.models import QuarantinedFile
-from app.defense.quarantine import restore_quarantined_file, delete_quarantined_file
-from app.core.models import (
-    FileEvent,
-    ScanResult,
-    Alert,
-    Policy,
-    SensitiveDirectory,
-)
-from app.scanning.scanner import scan_bytes
+from app.core.models import FileEvent, ScanResult, Alert, Policy, SensitiveDirectory, QuarantinedFile
+from app.scanning.scanner import scan_file, scan_bytes
+from app.defense.quarantine import quarantine_file, restore_quarantined_file, delete_quarantined_file
+from app.core.notifications import send_alert_notification
 
 router = APIRouter()
 
-
-# ── Stats ────────────────────────────────────────────────────
-
-
+# --- STATS ENDPOINT ---
 @router.get("/stats")
-def get_stats(db: Session = Depends(get_db)):
-    total = db.query(FileEvent).count()
-    scans = db.query(ScanResult).count()
-    threats = (
-        db.query(ScanResult)
-        .filter(ScanResult.verdict.in_(["suspicious", "dangerous"]))
-        .count()
-    )
-    alerts = db.query(Alert).filter(Alert.is_resolved == False).count()
-    transfers = (
-        db.query(FileEvent)
-        .filter(FileEvent.event_type.in_(["move", "transfer"]))
-        .count()
-    )
-    tampered = (
-        db.query(FileEvent)
-        .filter(FileEvent.integrity_status == "tampered")
-        .count()
-    )
+def get_dashboard_stats(db: Session = Depends(get_db)):
+    total_transfers = db.query(FileEvent).count()
+    total_threats = db.query(ScanResult).filter(ScanResult.threat_score >= 35).count()
+    unresolved_alerts = db.query(Alert).filter(Alert.status == "UNRESOLVED").count()
+    quarantined_count = db.query(QuarantinedFile).count()
+
+    recent_alerts = db.query(Alert).order_by(Alert.timestamp.desc()).limit(5).all()
+
     return {
-        "total_files": total,
-        "total_scans": scans,
-        "threats_blocked": threats,
-        "active_alerts": alerts,
-        "total_transfers": transfers,
-        "tampered_files": tampered,
+        "total_transfers": total_transfers,
+        "total_threats": total_threats,
+        "unresolved_alerts": unresolved_alerts,
+        "quarantined_count": quarantined_count,
+        "recent_alerts": [
+            {
+                "id": a.id,
+                "severity": a.severity,
+                "title": a.title,
+                "description": a.description,
+                "file_path": a.file_path,
+                "status": a.status,
+                "timestamp": a.timestamp.isoformat() if a.timestamp else ""
+            } for a in recent_alerts
+        ]
     }
 
-
-# ── File Events (Transfer Log) ──────────────────────────────
-
-
+# --- EVENTS ENDPOINT ---
 @router.get("/events")
-def get_events(limit: int = 50, db: Session = Depends(get_db)):
-    events = (
-        db.query(FileEvent).order_by(FileEvent.timestamp.desc()).limit(limit).all()
-    )
-    return [
-        {
-            "id": e.id,
-            "filename": e.filename,
-            "event_type": e.event_type,
-            "source_path": e.source_path,
-            "dest_path": e.dest_path,
-            "file_size": e.file_size,
-            "file_hash": e.file_hash,
-            "pre_hash": e.pre_hash,
-            "post_hash": e.post_hash,
-            "integrity_status": e.integrity_status,
-            "process_name": e.process_name,
-            "username": e.username,
-            "is_sensitive": e.is_sensitive,
-            "timestamp": e.timestamp.isoformat() if e.timestamp else None,
-        }
-        for e in events
-    ]
+def get_events(
+    event_type: Optional[str] = None,
+    integrity_state: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    query = db.query(FileEvent)
+    if event_type:
+        query = query.filter(FileEvent.event_type == event_type)
+    if integrity_state:
+        query = query.filter(FileEvent.integrity_state == integrity_state)
+    if search:
+        query = query.filter(
+            (FileEvent.source_path.like(f"%{search}%")) |
+            (FileEvent.process_name.like(f"%{search}%")) |
+            (FileEvent.username.like(f"%{search}%"))
+        )
+    events = query.order_by(FileEvent.timestamp.desc()).limit(limit).all()
+    return events
 
-
-# ── Scans ────────────────────────────────────────────────────
-
-
+# --- SCANS ENDPOINT ---
 @router.get("/scans")
 def get_scans(limit: int = 50, db: Session = Depends(get_db)):
-    scans = (
-        db.query(ScanResult).order_by(ScanResult.scanned_at.desc()).limit(limit).all()
-    )
-    results = []
-    for s in scans:
-        fe = db.query(FileEvent).filter(FileEvent.id == s.file_event_id).first()
-        results.append(
-            {
-                "id": s.id,
-                "filename": fe.filename if fe else "unknown",
-                "file_hash": s.file_hash,
-                "verdict": s.verdict,
-                "threat_score": s.threat_score,
-                "findings": s.findings,
-                "scan_duration_ms": s.scan_duration_ms,
-                "scanned_at": s.scanned_at.isoformat() if s.scanned_at else None,
-            }
-        )
-    return results
+    return db.query(ScanResult).order_by(ScanResult.timestamp.desc()).limit(limit).all()
 
+# --- SCAN UPLOAD ENDPOINT ---
+@router.post("/scan")
+async def handle_scan_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    temp_path = None
+    try:
+        temp_dir = os.path.join(tempfile.gettempdir(), "sftms_scans")
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_path = os.path.join(temp_dir, file.filename)
 
-# ── Alerts ───────────────────────────────────────────────────
+        with open(temp_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
+        result = scan_file(temp_path, db)
 
-@router.get("/alerts")
-def get_alerts(active_only: bool = True, db: Session = Depends(get_db)):
-    q = db.query(Alert).order_by(Alert.created_at.desc())
-    if active_only:
-        q = q.filter(Alert.is_resolved == False)
-    return [
-        {
-            "id": a.id,
-            "severity": a.severity,
-            "alert_type": a.alert_type,
-            "title": a.title,
-            "description": a.description,
-            "is_resolved": a.is_resolved,
-            "created_at": a.created_at.isoformat() if a.created_at else None,
+        # Dynamic Kwargs for ScanResult based on model columns
+        valid_cols = [c.name for c in ScanResult.__table__.columns]
+        scan_kwargs = {
+            "threat_score": result["threat_score"],
+            "verdict": result["verdict"],
+            "threats_detected": "; ".join(result["threats_detected"]),
+            "timestamp": datetime.utcnow()
         }
-        for a in q.limit(50).all()
-    ]
+        if "file_name" in valid_cols:
+            scan_kwargs["file_name"] = file.filename
+        if "file_path" in valid_cols:
+            scan_kwargs["file_path"] = file.filename
 
+        scan_record = ScanResult(**scan_kwargs)
+        db.add(scan_record)
+
+        # Alert & Notification for Threats (Score >= 35)
+        if result["threat_score"] >= 35:
+            severity = "CRITICAL" if result["verdict"] == "MALICIOUS" else "HIGH"
+            alert = Alert(
+                severity=severity,
+                title=f"Scanner Threat Detected: {file.filename}",
+                description=f"Manual scanner upload scored {result['threat_score']}/100 ({result['verdict']}). Threats: {', '.join(result['threats_detected'])}",
+                file_path=file.filename,
+                status="UNRESOLVED",
+                timestamp=datetime.utcnow()
+            )
+            db.add(alert)
+
+            send_alert_notification(
+                title=f"⚠️ SFTMS Threat Detected ({result['verdict']})",
+                message=f"File: {file.filename}\nScore: {result['threat_score']}/100\nThreats: {', '.join(result['threats_detected'][:2])}"
+            )
+
+            # Auto Quarantine for High Risk (Score >= 70)
+            if result["threat_score"] >= 70:
+                quarantined = quarantine_file(temp_path, db, f"Manual Scan Neutralization ({result['verdict']})")
+                if quarantined:
+                    temp_path = None
+                    send_alert_notification(
+                        title="🛡️ Threat Auto-Quarantined",
+                        message=f"{file.filename} was isolated to Quarantine Vault."
+                    )
+
+        db.commit()
+        return result
+    except Exception as e:
+        db.rollback()
+        return {
+            "file_name": file.filename,
+            "threat_score": 0,
+            "verdict": "ERROR",
+            "threats_detected": [f"Scan processing error: {str(e)}"],
+            "details": "Failed to inspect uploaded file."
+        }
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+# --- ALERTS ENDPOINTS ---
+@router.get("/alerts")
+def get_alerts(status: Optional[str] = None, db: Session = Depends(get_db)):
+    query = db.query(Alert)
+    if status:
+        query = query.filter(Alert.status == status)
+    return query.order_by(Alert.timestamp.desc()).all()
 
 @router.post("/alerts/{alert_id}/resolve")
 def resolve_alert(alert_id: int, db: Session = Depends(get_db)):
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
-    if alert:
-        alert.is_resolved = True
-        db.commit()
-        return {"status": "resolved"}
-    return {"status": "not found"}
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    alert.status = "RESOLVED"
+    db.commit()
+    return {"message": "Alert resolved"}
 
-
-# ── Manual Scan ──────────────────────────────────────────────
-
-
-@router.post("/scan")
-def scan_upload(file: UploadFile = File(...)):
-    data = file.file.read()
-    result = scan_bytes(file.filename, data)
-    return {
-        "filename": file.filename,
-        "file_size": result.file_size,
-        "file_hash": result.file_hash,
-        "file_type": result.file_type,
-        "verdict": result.verdict,
-        "threat_score": result.threat_score,
-        "findings": result.findings,
-        "scan_duration_ms": result.scanned_in_ms,
-    }
-
-
-# ── Policies ─────────────────────────────────────────────────
-
-
+# --- POLICIES ENDPOINTS ---
 @router.get("/policies")
 def get_policies(db: Session = Depends(get_db)):
-    policies = db.query(Policy).order_by(Policy.id).all()
-    return [
-        {
-            "id": p.id,
-            "name": p.name,
-            "description": p.description,
-            "policy_type": p.policy_type,
-            "action": p.action,
-            "enabled": p.enabled,
-            "parameters": p.parameters,
-        }
-        for p in policies
-    ]
-
+    return db.query(Policy).all()
 
 @router.post("/policies")
-def create_policy(data: dict, db: Session = Depends(get_db)):
-    p = Policy(
-        name=data.get("name", ""),
-        description=data.get("description", ""),
-        policy_type=data.get("policy_type", "extension_block"),
-        action=data.get("action", "block"),
-        enabled=data.get("enabled", True),
-        parameters=data.get("parameters", ""),
-    )
+def create_policy(name: str, rule_type: str, target_value: str, is_active: bool = True, db: Session = Depends(get_db)):
+    p = Policy(name=name, rule_type=rule_type, target_value=target_value, is_active=is_active)
     db.add(p)
     db.commit()
     db.refresh(p)
-    return {"id": p.id, "status": "created"}
-
+    return p
 
 @router.put("/policies/{policy_id}")
-def update_policy(policy_id: int, data: dict, db: Session = Depends(get_db)):
+def toggle_policy(policy_id: int, is_active: bool, db: Session = Depends(get_db)):
     p = db.query(Policy).filter(Policy.id == policy_id).first()
     if not p:
-        return {"status": "not found"}
-    for key in ["name", "description", "policy_type", "action", "enabled", "parameters"]:
-        if key in data:
-            setattr(p, key, data[key])
+        raise HTTPException(status_code=404, detail="Policy not found")
+    p.is_active = is_active
     db.commit()
-    return {"status": "updated"}
-
+    return p
 
 @router.delete("/policies/{policy_id}")
 def delete_policy(policy_id: int, db: Session = Depends(get_db)):
     p = db.query(Policy).filter(Policy.id == policy_id).first()
-    if p:
-        db.delete(p)
-        db.commit()
-        return {"status": "deleted"}
-    return {"status": "not found"}
-
-
-@router.post("/policies/seed")
-def seed_policies(db: Session = Depends(get_db)):
-    count = db.query(Policy).count()
-    if count > 0:
-        return {"status": "already seeded", "count": count}
-    defaults = [
-        Policy(
-            name="Block Executables",
-            description="Block .exe, .bat, .cmd, .ps1, .msi files",
-            policy_type="extension_block",
-            action="block",
-            enabled=True,
-            parameters=".exe,.bat,.cmd,.ps1,.msi",
-        ),
-        Policy(
-            name="Block Scripts",
-            description="Block .js, .vbs, .wsf, .sh script files",
-            policy_type="extension_block",
-            action="block",
-            enabled=True,
-            parameters=".js,.vbs,.wsf,.sh",
-        ),
-        Policy(
-            name="Large File Warning",
-            description="Flag files larger than 100 MB",
-            policy_type="size_limit",
-            action="alert",
-            enabled=True,
-            parameters="104857600",
-        ),
-        Policy(
-            name="Double Extension Block",
-            description="Block files with double extensions like .pdf.exe",
-            policy_type="double_extension",
-            action="block",
-            enabled=True,
-            parameters="",
-        ),
-        Policy(
-            name="Archive Scan",
-            description="Scan inside .zip and .rar archives",
-            policy_type="archive_scan",
-            action="scan",
-            enabled=True,
-            parameters=".zip,.rar,.7z",
-        ),
-        Policy(
-            name="Whitelist Documents",
-            description="Allow .pdf, .docx, .xlsx, .pptx without deep scan",
-            policy_type="whitelist",
-            action="allow",
-            enabled=True,
-            parameters=".pdf,.docx,.xlsx,.pptx",
-        ),
-    ]
-    db.add_all(defaults)
+    if not p:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    db.delete(p)
     db.commit()
-    return {"status": "seeded", "count": len(defaults)}
+    return {"message": "Policy deleted"}
 
-
-# ── Sensitive Directories ────────────────────────────────────
-
-
+# --- SENSITIVE DIRECTORIES ENDPOINTS ---
 @router.get("/sensitive-dirs")
 def get_sensitive_dirs(db: Session = Depends(get_db)):
-    dirs = db.query(SensitiveDirectory).order_by(SensitiveDirectory.id).all()
-    return [
-        {
-            "id": d.id,
-            "path": d.path,
-            "label": d.label,
-            "alert_on_access": d.alert_on_access,
-            "alert_on_copy": d.alert_on_copy,
-            "alert_on_move": d.alert_on_move,
-            "alert_on_delete": d.alert_on_delete,
-        }
-        for d in dirs
-    ]
-
+    return db.query(SensitiveDirectory).all()
 
 @router.post("/sensitive-dirs")
-def add_sensitive_dir(data: dict, db: Session = Depends(get_db)):
-    d = SensitiveDirectory(
-        path=data.get("path", ""),
-        label=data.get("label", ""),
-        alert_on_access=data.get("alert_on_access", True),
-        alert_on_copy=data.get("alert_on_copy", True),
-        alert_on_move=data.get("alert_on_move", True),
-        alert_on_delete=data.get("alert_on_delete", True),
-    )
-    db.add(d)
+def create_sensitive_dir(path: str, description: str = "", db: Session = Depends(get_db)):
+    s_dir = SensitiveDirectory(path=path, description=description)
+    db.add(s_dir)
     db.commit()
-    db.refresh(d)
-    return {"id": d.id, "status": "created"}
-
+    db.refresh(s_dir)
+    return s_dir
 
 @router.delete("/sensitive-dirs/{dir_id}")
-def remove_sensitive_dir(dir_id: int, db: Session = Depends(get_db)):
-    d = db.query(SensitiveDirectory).filter(SensitiveDirectory.id == dir_id).first()
-    if d:
-        db.delete(d)
-        db.commit()
-        return {"status": "deleted"}
-    return {"status": "not found"}
+def delete_sensitive_dir(dir_id: int, db: Session = Depends(get_db)):
+    s_dir = db.query(SensitiveDirectory).filter(SensitiveDirectory.id == dir_id).first()
+    if not s_dir:
+        raise HTTPException(status_code=404, detail="Sensitive directory not found")
+    db.delete(s_dir)
+    db.commit()
+    return {"message": "Sensitive directory removed"}
 
-# ── Quarantine Vault API ──────────────────────────────────────
-
+# --- QUARANTINE VAULT ENDPOINTS ---
 @router.get("/quarantine")
-def get_quarantined_files(db: Session = Depends(get_db)):
-    files = (
-        db.query(QuarantinedFile)
-        .filter(QuarantinedFile.is_restored == False)
-        .order_by(QuarantinedFile.quarantined_at.desc())
-        .all()
-    )
-    return [
-        {
-            "id": f.id,
-            "filename": f.original_filename,
-            "original_path": f.original_path,
-            "file_size": f.file_size,
-            "file_hash": f.file_hash,
-            "reason": f.reason,
-            "quarantined_at": f.quarantined_at.isoformat() if f.quarantined_at else None,
-        }
-        for f in files
-    ]
+def list_quarantined_files(db: Session = Depends(get_db)):
+    return db.query(QuarantinedFile).order_by(QuarantinedFile.timestamp.desc()).all()
 
-@router.post("/quarantine/{file_id}/restore")
-def restore_file_route(file_id: int, db: Session = Depends(get_db)):
-    success = restore_quarantined_file(file_id, db)
-    return {"status": "restored" if success else "failed"}
+@router.post("/quarantine/{quarantine_id}/restore")
+def handle_restore(quarantine_id: int, db: Session = Depends(get_db)):
+    success = restore_quarantined_file(quarantine_id, db)
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to restore file from quarantine")
+    return {"message": "File restored successfully"}
 
-@router.delete("/quarantine/{file_id}")
-def delete_quarantined_route(file_id: int, db: Session = Depends(get_db)):
-    success = delete_quarantined_file(file_id, db)
-    return {"status": "deleted" if success else "failed"}
+@router.delete("/quarantine/{quarantine_id}")
+def handle_delete_quarantine(quarantine_id: int, db: Session = Depends(get_db)):
+    success = delete_quarantined_file(quarantine_id, db)
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to delete file from quarantine")
+    return {"message": "Quarantined file permanently deleted"}
+
+# --- REPORTS EXPORT ENDPOINT ---
+@router.get("/reports/export")
+def export_csv_report(db: Session = Depends(get_db)):
+    events = db.query(FileEvent).order_by(FileEvent.timestamp.desc()).limit(1000).all()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "Timestamp", "Event Type", "Source Path", "Dest Path", "Size (Bytes)", "Process", "User", "Hash", "Integrity State"])
+
+    for e in events:
+        writer.writerow([
+            e.id,
+            e.timestamp.isoformat() if e.timestamp else "",
+            e.event_type,
+            e.source_path,
+            e.dest_path or "",
+            e.file_size,
+            e.process_name,
+            e.username,
+            e.file_hash,
+            e.integrity_state
+        ])
+
+    response = Response(content=output.getvalue(), media_type="text/csv")
+    response.headers["Content-Disposition"] = f"attachment; filename=sftms_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    return response

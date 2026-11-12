@@ -1,12 +1,360 @@
-.upload-zone-drag {
-  border-color: #06b6d4;
-  background: rgba(6, 182, 212, 0.05);
-  box-shadow: 0 0 40px rgba(6, 182, 212, 0.1);
+.scanner-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: 1.5rem 2rem;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  box-sizing: border-box;
+  animation: fadeIn 0.4s ease-out;
 }
-.scan-result-enter {
-  animation: fadeSlideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+
+.scanner-header h2 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: #ffffff;
+  margin: 0 0 0.35rem 0;
+  letter-spacing: -0.02em;
 }
-.threat-bar-clean { box-shadow: 0 0 12px rgba(16, 185, 129, 0.3); }
-.threat-bar-suspicious { box-shadow: 0 0 12px rgba(245, 158, 11, 0.3); }
-.threat-bar-dangerous { box-shadow: 0 0 12px rgba(244, 63, 94, 0.3); }
-.scan-spinner { filter: drop-shadow(0 0 8px rgba(6, 182, 212, 0.5)); }
+
+.scanner-header p {
+  font-size: 0.95rem;
+  color: #8a99ad;
+  margin: 0;
+}
+
+.scanner-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+/* Glassmorphism Cyber Dropzone */
+.scanner-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 3.5rem 2rem;
+  background: rgba(18, 24, 38, 0.4);
+  backdrop-filter: blur(12px);
+  border: 2px dashed rgba(0, 240, 255, 0.25);
+  border-radius: 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  position: relative;
+  overflow: hidden;
+}
+
+.scanner-dropzone:hover,
+.scanner-dropzone.dragover {
+  border-color: #00f0ff;
+  background: rgba(0, 240, 255, 0.05);
+  box-shadow: 0 0 25px rgba(0, 240, 255, 0.25), inset 0 0 15px rgba(0, 240, 255, 0.1);
+  transform: translateY(-2px);
+}
+
+.scanner-dropzone.has-file {
+  border-style: solid;
+  border-color: rgba(112, 0, 255, 0.5);
+  background: rgba(112, 0, 255, 0.05);
+}
+
+.upload-icon {
+  font-size: 3.5rem;
+  color: #00f0ff;
+  margin-bottom: 1rem;
+  filter: drop-shadow(0 0 10px rgba(0, 240, 255, 0.5));
+  transition: transform 0.3s ease;
+}
+
+.scanner-dropzone:hover .upload-icon {
+  transform: scale(1.1) translateY(-4px);
+}
+
+.scanner-dropzone h3 {
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: #ffffff;
+  margin: 0 0 0.5rem 0;
+}
+
+.supported-formats {
+  font-size: 0.85rem;
+  color: #64748b;
+  margin: 0;
+}
+
+/* File Preview state inside Dropzone */
+.file-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.file-name {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #ffffff;
+  word-break: break-all;
+  margin: 0;
+}
+
+.file-meta {
+  font-size: 0.85rem;
+  color: #00f0ff;
+  background: rgba(0, 240, 255, 0.1);
+  padding: 0.2rem 0.75rem;
+  border-radius: 20px;
+  border: 1px solid rgba(0, 240, 255, 0.3);
+  margin: 0.5rem 0 0 0;
+}
+
+/* Scanner Action Controls */
+.scanner-actions {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.start-scan-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.85rem 1.75rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #ffffff;
+  background: linear-gradient(135deg, #00f0ff 0%, #7000ff 100%);
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  box-shadow: 0 4px 20px rgba(0, 240, 255, 0.3);
+}
+
+.start-scan-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 25px rgba(0, 240, 255, 0.5);
+}
+
+.reset-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.85rem 1.5rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+
+.reset-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+/* Progress Bar Display */
+.scanner-progress-container {
+  margin-top: 0.5rem;
+  padding: 1.25rem 1.5rem;
+  background: rgba(18, 24, 38, 0.6);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(0, 240, 255, 0.3);
+  border-radius: 12px;
+}
+
+.progress-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.stage-text {
+  font-size: 0.9rem;
+  color: #00f0ff;
+  font-weight: 600;
+}
+
+.progress-percentage {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.progress-bar-track {
+  width: 100%;
+  height: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #00f0ff, #7000ff);
+  transition: width 0.3s ease-in-out;
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.8);
+}
+
+/* Error Notification */
+.scanner-error-card {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.25rem 1.5rem;
+  background: rgba(255, 0, 85, 0.1);
+  border: 1px solid rgba(255, 0, 85, 0.4);
+  border-radius: 12px;
+  color: #ff4d79;
+}
+
+.scanner-error-card h4 {
+  margin: 0 0 0.25rem 0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.scanner-error-card p {
+  margin: 0;
+  font-size: 0.88rem;
+  color: #e2e8f0;
+}
+
+/* Scan Result Card */
+.scan-result-card {
+  padding: 1.75rem;
+  border-radius: 16px;
+  background: rgba(18, 24, 38, 0.6);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.scan-result-card.verdict-benign {
+  border-color: rgba(0, 230, 118, 0.4);
+  box-shadow: 0 0 20px rgba(0, 230, 118, 0.15);
+}
+
+.scan-result-card.verdict-suspicious {
+  border-color: rgba(255, 170, 0, 0.4);
+  box-shadow: 0 0 20px rgba(255, 170, 0, 0.15);
+}
+
+.scan-result-card.verdict-malicious {
+  border-color: rgba(255, 0, 85, 0.5);
+  box-shadow: 0 0 20px rgba(255, 0, 85, 0.2);
+}
+
+.result-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.verdict-badge {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.badge-icon {
+  font-size: 2.75rem;
+}
+
+.badge-icon.benign { color: #00e676; }
+.badge-icon.suspicious { color: #ffaa00; }
+.badge-icon.malicious { color: #ff0055; }
+
+.verdict-badge h3 {
+  font-size: 1.35rem;
+  font-weight: 700;
+  margin: 0 0 0.2rem 0;
+  color: #ffffff;
+}
+
+.verdict-badge p {
+  font-size: 0.88rem;
+  color: #8a99ad;
+  margin: 0;
+}
+
+.score-box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.score-val {
+  font-size: 2rem;
+  font-weight: 800;
+  color: #ffffff;
+  line-height: 1;
+}
+
+.score-lbl {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  margin-top: 0.25rem;
+}
+
+.threats-list-container h4 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  margin: 0 0 0.75rem 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.threats-list-container ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.threat-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  font-size: 0.9rem;
+  color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.6rem 0.85rem;
+  border-radius: 8px;
+  border-left: 3px solid #00f0ff;
+}
+
+.threat-bullet {
+  color: #00f0ff;
+  font-size: 1.1rem;
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+}
+
+.result-details {
+  font-size: 0.82rem;
+  color: #64748b;
+  border-top: 1px dashed rgba(255, 255, 255, 0.08);
+  padding-top: 0.75rem;
+}

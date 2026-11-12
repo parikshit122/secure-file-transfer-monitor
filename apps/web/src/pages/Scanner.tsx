@@ -1,344 +1,242 @@
-import { useState, useRef, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import {
-  RiUploadCloud2Fill,
-  RiCheckDoubleFill,
-  RiErrorWarningFill,
-  RiCloseCircleFill,
-  RiFileFill,
-  RiTimeFill,
-  RiShieldCheckFill,
-  RiFingerprintFill,
-  RiLoader4Fill,
-} from "react-icons/ri";
-import type { IconType } from "react-icons";
+import React, { useState, useRef, useEffect } from 'react';
+import { 
+  RiUploadCloud2Line, 
+  RiShieldCheckLine, 
+  RiAlertLine, 
+  RiFileWarningLine, 
+  RiSearchEyeLine,
+  RiRefreshLine,
+  RiCheckDoubleLine
+} from 'react-icons/ri';
+import '../styles/scanner.css';
 
 interface ScanResult {
-  filename: string;
-  file_size: number;
-  file_hash: string;
-  file_type: string;
-  verdict: string;
+  file_name: string;
   threat_score: number;
-  findings: string[];
-  scan_duration_ms: number;
+  verdict: 'BENIGN' | 'SUSPICIOUS' | 'MALICIOUS' | 'ERROR';
+  threats_detected: string[];
+  details: string;
 }
 
-function formatSize(b: number) {
-  if (!b) return "0 B";
-  const k = 1024,
-    s = ["B", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(b) / Math.log(k));
-  return parseFloat((b / Math.pow(k, i)).toFixed(1)) + " " + s[i];
-}
-
-const vCfg: Record<
-  string,
-  {
-    icon: IconType;
-    color: string;
-    bg: string;
-    border: string;
-    label: string;
-    bar: string;
-    glow: string;
-  }
-> = {
-  clean: {
-    icon: RiCheckDoubleFill,
-    color: "text-emerald-400",
-    bg: "from-emerald-400/10 to-emerald-500/5",
-    border: "border-emerald-400/30",
-    label: "CLEAN — Safe to share",
-    bar: "bg-emerald-400",
-    glow: "threat-bar-clean",
-  },
-  suspicious: {
-    icon: RiErrorWarningFill,
-    color: "text-amber-400",
-    bg: "from-amber-400/10 to-amber-500/5",
-    border: "border-amber-400/30",
-    label: "SUSPICIOUS — Review first",
-    bar: "bg-amber-400",
-    glow: "threat-bar-suspicious",
-  },
-  dangerous: {
-    icon: RiCloseCircleFill,
-    color: "text-rose-400",
-    bg: "from-rose-400/10 to-rose-500/5",
-    border: "border-rose-400/30",
-    label: "DANGEROUS — Do NOT share",
-    bar: "bg-rose-400",
-    glow: "threat-bar-dangerous",
-  },
-};
-
-export default function Scanner() {
-  const [dragging, setDragging] = useState(false);
-  const [scanning, setScanning] = useState(false);
+export const Scanner: React.FC = () => {
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [scanning, setScanning] = useState<boolean>(false);
+  const [progress, setProgress] = useState<number>(0);
+  const [stageText, setStageText] = useState<string>('');
   const [result, setResult] = useState<ScanResult | null>(null);
-  const [error, setError] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState<boolean>(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFile = useCallback(async (file: File) => {
-    setScanning(true);
-    setResult(null);
-    setError("");
-    const form = new FormData();
-    form.append("file", file);
-    try {
-      const res = await fetch("/api/scan", { method: "POST", body: form });
-      const data = await res.json();
-      if (data.error) setError(data.error);
-      else setResult(data);
-    } catch {
-      setError("Scan failed. Is the backend running?");
-    } finally {
+  useEffect(() => {
+    return () => {
       setScanning(false);
-    }
+      setProgress(0);
+    };
   }, []);
 
-  const onDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      setDragging(false);
-      if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
-    },
-    [handleFile],
-  );
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setSelectedFile(e.target.files[0]);
+      setResult(null);
+      setErrorMessage(null);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDragOver(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      setSelectedFile(e.dataTransfer.files[0]);
+      setResult(null);
+      setErrorMessage(null);
+    }
+  };
+
+  const startScan = async () => {
+    if (!selectedFile) return;
+
+    setScanning(true);
+    setProgress(5);
+    setStageText('Initializing Security Scanner Engine...');
+    setErrorMessage(null);
+    setResult(null);
+
+    const progressInterval = setInterval(() => {
+      setProgress((prev) => {
+        if (prev < 30) {
+          setStageText('Reading Magic Bytes & Entropy Analysis...');
+          return prev + 15;
+        } else if (prev < 60) {
+          setStageText('Inspecting APK Permissions, Bytecode & Macros...');
+          return prev + 15;
+        } else if (prev < 85) {
+          setStageText('Running YARA Secret Leak & Hash Comparison...');
+          return prev + 10;
+        }
+        return prev;
+      });
+    }, 250);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+
+      const response = await fetch('http://localhost:8000/api/scan', {
+        method: 'POST',
+        body: formData,
+      });
+
+      clearInterval(progressInterval);
+
+      if (!response.ok) {
+        throw new Error(`Server returned HTTP status ${response.status}`);
+      }
+
+      const data = (await response.json()) as ScanResult;
+      setProgress(100);
+      setStageText('Analysis Complete');
+      
+      setTimeout(() => {
+        setResult(data);
+        setScanning(false);
+      }, 400);
+
+    } catch (err: unknown) {
+      clearInterval(progressInterval);
+      setScanning(false);
+      setProgress(0);
+      const errMsg = err instanceof Error ? err.message : 'Failed to analyze file. Backend might be unreachable.';
+      setErrorMessage(errMsg);
+    }
+  };
+
+  const resetScanner = () => {
+    setSelectedFile(null);
+    setResult(null);
+    setErrorMessage(null);
+    setScanning(false);
+    setProgress(0);
+    setStageText('');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
 
   return (
-    <div className="space-y-6 max-w-3xl mx-auto">
-      <motion.div
-        initial={{ opacity: 0, x: -20 }}
-        animate={{ opacity: 1, x: 0 }}
-      >
-        <h1 className="text-3xl font-bold gradient-text">File Scanner</h1>
-        <p className="text-slate-400 mt-1">
-          Upload a file to scan for threats before sharing
-        </p>
-      </motion.div>
+    <div className="scanner-container">
+      <header className="scanner-header">
+        <div>
+          <h2>Deep Heuristic File Scanner</h2>
+          <p>Inspect APKs, Office Macros, Shannon Entropy & Embedded Malware Payloads</p>
+        </div>
+      </header>
 
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={onDrop}
-        onClick={() => inputRef.current?.click()}
-        whileHover={{ scale: 1.01 }}
-        whileTap={{ scale: 0.99 }}
-        className={
-          "relative border-2 border-dashed rounded-2xl p-16 text-center cursor-pointer transition-all duration-300 overflow-hidden " +
-          (dragging
-            ? "upload-zone-drag"
-            : "border-slate-700 glass hover:border-slate-500")
-        }
-      >
-        {dragging && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="absolute inset-0 bg-linear-to-r from-cyan-400/5 via-violet-400/5 to-cyan-400/5"
+      <div className="scanner-content">
+        <div 
+          className={`scanner-dropzone ${dragOver ? 'dragover' : ''} ${selectedFile ? 'has-file' : ''}`}
+          onDragOver={(e: React.DragEvent<HTMLDivElement>) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+          onClick={() => !scanning && fileInputRef.current?.click()}
+        >
+          <input 
+            type="file" 
+            ref={fileInputRef} 
+            onChange={handleFileChange} 
+            style={{ display: 'none' }} 
+            disabled={scanning}
           />
-        )}
-        <input
-          ref={inputRef}
-          type="file"
-          className="hidden"
-          onChange={(e) => {
-            if (e.target.files?.[0]) handleFile(e.target.files[0]);
-          }}
-        />
-        {scanning ? (
-          <div className="flex flex-col items-center gap-4">
-            <motion.div
-              animate={{ rotate: 360 }}
-              transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
-              className="scan-spinner"
-            >
-              <RiLoader4Fill className="w-16 h-16 text-cyan-400" />
-            </motion.div>
-            <p className="text-xl text-white font-bold">Scanning file...</p>
-            <p className="text-sm text-slate-400">Running 9 security checks</p>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center gap-4 relative">
-            <motion.div
-              animate={dragging ? { scale: 1.2, y: -8 } : { scale: 1, y: 0 }}
-              className={
-                "p-5 rounded-2xl transition-colors " +
-                (dragging ? "bg-cyan-400/10" : "bg-slate-800/80")
-              }
-            >
-              <RiUploadCloud2Fill
-                className={
-                  "w-14 h-14 transition-colors " +
-                  (dragging ? "text-cyan-400" : "text-slate-500")
-                }
-              />
-            </motion.div>
+
+          <RiUploadCloud2Line className="upload-icon" />
+
+          {selectedFile ? (
+            <div className="file-preview">
+              <p className="file-name">{selectedFile.name}</p>
+              <p className="file-meta">{(selectedFile.size / (1024 * 1024)).toFixed(2)} MB</p>
+            </div>
+          ) : (
             <div>
-              <p className="text-xl text-white font-bold">
-                {dragging ? "Drop it here!" : "Drag & drop a file"}
-              </p>
-              <p className="text-sm text-slate-500 mt-1">
-                or click to browse &middot; Any file type &middot; Max 100MB
-              </p>
+              <h3>Drag and drop file here, or click to browse</h3>
+              <p className="supported-formats">Supports .apk, .docm, .doc, .exe, .pdf, .zip, .txt and binary scripts</p>
+            </div>
+          )}
+        </div>
+
+        <div className="scanner-actions">
+          {selectedFile && !scanning && !result && (
+            <button className="btn-primary start-scan-btn" onClick={startScan}>
+              <RiSearchEyeLine /> Run Deep Inspection Scan
+            </button>
+          )}
+
+          {(selectedFile || result || errorMessage) && (
+            <button className="btn-secondary reset-btn" onClick={resetScanner} disabled={scanning}>
+              <RiRefreshLine /> Reset Scanner
+            </button>
+          )}
+        </div>
+
+        {scanning && (
+          <div className="scanner-progress-container glass-card">
+            <div className="progress-info">
+              <span className="stage-text">{stageText}</span>
+              <span className="progress-percentage">{progress}%</span>
+            </div>
+            <div className="progress-bar-track">
+              <div className="progress-bar-fill" style={{ width: `${progress}%` }}></div>
             </div>
           </div>
         )}
-      </motion.div>
 
-      <AnimatePresence>
-        {error && (
-          <motion.div
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            className="bg-rose-400/10 border border-rose-400/30 rounded-xl p-4 flex items-center gap-3"
-          >
-            <RiCloseCircleFill className="w-5 h-5 text-rose-400" />
-            <p className="text-rose-400 text-sm">{error}</p>
-          </motion.div>
+        {errorMessage && (
+          <div className="scanner-error-card">
+            <RiFileWarningLine className="error-icon" />
+            <div>
+              <h4>Scan Execution Error</h4>
+              <p>{errorMessage}</p>
+            </div>
+          </div>
         )}
-      </AnimatePresence>
 
-      <AnimatePresence>
-        {result &&
-          (() => {
-            const v = vCfg[result.verdict] || vCfg.clean;
-            const VIcon = v.icon;
-            return (
-              <motion.div
-                initial={{ opacity: 0, y: 30, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -20 }}
-                transition={{ type: "spring", stiffness: 200, damping: 20 }}
-                className={
-                  "glass rounded-2xl border p-6 bg-linear-to-br " +
-                  v.bg +
-                  " " +
-                  v.border +
-                  " scan-result-enter"
-                }
-              >
-                <div className="flex items-center gap-4 mb-6">
-                  <motion.div
-                    initial={{ scale: 0, rotate: -180 }}
-                    animate={{ scale: 1, rotate: 0 }}
-                    transition={{ type: "spring", delay: 0.2 }}
-                    className="p-4 rounded-2xl bg-slate-900/50"
-                  >
-                    <VIcon className={"w-10 h-10 " + v.color} />
-                  </motion.div>
-                  <div>
-                    <p className={"text-2xl font-bold " + v.color}>{v.label}</p>
-                    <p className="text-sm text-slate-400 mt-0.5">
-                      {result.filename}
-                    </p>
-                  </div>
-                  <motion.div
-                    initial={{ scale: 0 }}
-                    animate={{ scale: 1 }}
-                    transition={{ delay: 0.3, type: "spring" }}
-                    className="ml-auto text-right"
-                  >
-                    <p className="text-4xl font-bold text-white">
-                      {result.threat_score}
-                    </p>
-                    <p className="text-xs text-slate-500">threat score</p>
-                  </motion.div>
+        {result && (
+          <div className={`scan-result-card glass-card verdict-${result.verdict.toLowerCase()}`}>
+            <div className="result-header">
+              <div className="verdict-badge">
+                {result.verdict === 'BENIGN' && <RiShieldCheckLine className="badge-icon benign" />}
+                {result.verdict === 'SUSPICIOUS' && <RiAlertLine className="badge-icon suspicious" />}
+                {result.verdict === 'MALICIOUS' && <RiFileWarningLine className="badge-icon malicious" />}
+                <div>
+                  <h3>Verdict: {result.verdict}</h3>
+                  <p>Analyzed File: {result.file_name}</p>
                 </div>
+              </div>
+              <div className="score-box">
+                <span className="score-val">{result.threat_score}</span>
+                <span className="score-lbl">Threat Score / 100</span>
+              </div>
+            </div>
 
-                <div
-                  className={
-                    "mb-6 h-3 bg-slate-800 rounded-full overflow-hidden " +
-                    v.glow
-                  }
-                >
-                  <motion.div
-                    initial={{ width: 0 }}
-                    animate={{ width: Math.max(result.threat_score, 3) + "%" }}
-                    transition={{ duration: 1, delay: 0.4, ease: "easeOut" }}
-                    className={"h-full rounded-full " + v.bar}
-                  />
-                </div>
+            <div className="threats-list-container">
+              <h4>Threat Analysis Breakdown</h4>
+              <ul>
+                {result.threats_detected.map((t, idx) => (
+                  <li key={idx} className="threat-item">
+                    <RiCheckDoubleLine className="threat-bullet" />
+                    <span>{t}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-                  {(
-                    [
-                      {
-                        icon: RiFileFill,
-                        label: "Type",
-                        val: result.file_type,
-                      },
-                      {
-                        icon: RiUploadCloud2Fill,
-                        label: "Size",
-                        val: formatSize(result.file_size),
-                      },
-                      {
-                        icon: RiTimeFill,
-                        label: "Scan Time",
-                        val: result.scan_duration_ms + "ms",
-                      },
-                      {
-                        icon: RiShieldCheckFill,
-                        label: "Checks",
-                        val: "9 rules",
-                      },
-                    ] as { icon: IconType; label: string; val: string }[]
-                  ).map((d, i) => (
-                    <motion.div
-                      key={d.label}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: 0.5 + i * 0.1 }}
-                      className="bg-slate-900/50 rounded-xl p-3"
-                    >
-                      <d.icon className="w-5 h-5 text-slate-500 mb-1" />
-                      <p className="text-xs text-slate-500">{d.label}</p>
-                      <p className="text-sm text-white font-medium">{d.val}</p>
-                    </motion.div>
-                  ))}
-                </div>
-
-                <div className="bg-slate-900/50 rounded-xl p-3 mb-4">
-                  <div className="flex items-center gap-2 mb-1">
-                    <RiFingerprintFill className="w-4 h-4 text-slate-500" />
-                    <p className="text-xs text-slate-500">BLAKE3 Hash</p>
-                  </div>
-                  <p className="text-xs text-slate-300 font-mono break-all">
-                    {result.file_hash}
-                  </p>
-                </div>
-
-                <p className="text-sm font-medium text-slate-300 mb-2">
-                  Findings
-                </p>
-                <div className="space-y-1.5">
-                  {result.findings.map((f, i) => (
-                    <motion.div
-                      key={i}
-                      initial={{ x: -10, opacity: 0 }}
-                      animate={{ x: 0, opacity: 1 }}
-                      transition={{ delay: 0.7 + i * 0.05 }}
-                      className="flex items-center gap-2 text-sm"
-                    >
-                      <div className={"w-2 h-2 rounded-full " + v.bar} />
-                      <span className="text-slate-400">{f}</span>
-                    </motion.div>
-                  ))}
-                </div>
-              </motion.div>
-            );
-          })()}
-      </AnimatePresence>
+            <div className="result-details">
+              <small>{result.details}</small>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
-}
+};
+
+export default Scanner;
