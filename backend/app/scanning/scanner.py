@@ -1,6 +1,8 @@
 import os
+import io
+import zipfile
 import hashlib
-from typing import List
+from typing import List, Tuple
 from dataclasses import dataclass
 from sqlalchemy.orm import Session
 from app.core.models import Policy
@@ -23,7 +25,7 @@ MAGIC_SIGNATURES = {
     b"\x7fELF": "Linux Executable",
     b"\xca\xfe\xba\xbe": "Java Bytecode / Mach-O",
     b"\xfe\xed\xfa\xce": "Mach-O Executable",
-    b"PK\x03\x04": "Zip Archive",
+    b"PK\x03\x04": "Zip / Office Document Archive",
     b"%PDF": "PDF Document",
 }
 
@@ -42,7 +44,82 @@ DANGEROUS_EXTENSIONS = {
     ".cpl",
     ".msc",
     ".jar",
+    ".docm",
+    ".xlsm",
+    ".pptm",
 }
+
+SUSPICIOUS_MACRO_KEYWORDS = [
+    b"autoopen",
+    b"autoexec",
+    b"document_open",
+    b"workbook_open",
+    b"shell",
+    b"wscript.shell",
+    b"powershell",
+    b"urldownloadtofile",
+    b"virtualalloc",
+    b"writeprocessmemory",
+    b"createobject",
+    b"cmd.exe",
+]
+
+
+def inspect_office_document(filename: str, data: bytes) -> Tuple[int, List[str]]:
+    """Unpacks Office XML/ZIP structure in memory to inspect for hidden VBA macros & OLE payloads."""
+    score = 0
+    findings = []
+
+    ext = os.path.splitext(filename)[1].lower()
+
+    # Macro-enabled Office extensions
+    if ext in [".docm", ".xlsm", ".pptm"]:
+        score += 20
+        findings.append(f"Macro-enabled document format ('{ext}')")
+
+    try:
+        if data.startswith(b"PK\x03\x04"):
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                namelist = [name.lower() for name in z.namelist()]
+
+                # Check 1: Embedded VBA Macro Project
+                has_vba = any("vbaProject.bin" in name.lower() for name in namelist)
+                if has_vba:
+                    score += 35
+                    findings.append("Embedded VBA Macro project found (vbaProject.bin)")
+
+                    # Deep read vbaProject.bin for malicious execution keywords
+                    for name in z.namelist():
+                        if "vbaProject.bin" in name.lower():
+                            try:
+                                vba_bytes = z.read(name).lower()
+                                matched_keywords = [
+                                    kw.decode("utf-8")
+                                    for kw in SUSPICIOUS_MACRO_KEYWORDS
+                                    if kw in vba_bytes
+                                ]
+                                if matched_keywords:
+                                    score += 30
+                                    findings.append(
+                                        f"High-risk macro execution keywords detected: {', '.join(matched_keywords)}"
+                                    )
+                            except Exception:
+                                pass
+
+                # Check 2: Embedded OLE Objects (Binary payloads disguised in document)
+                ole_objects = [name for name in namelist if "oleobject" in name]
+                if ole_objects:
+                    score += 25
+                    findings.append(
+                        f"Embedded OLE binary objects found ({len(ole_objects)} stream(s))"
+                    )
+
+    except zipfile.BadZipFile:
+        pass
+    except Exception as e:
+        print(f"Office inspection error: {e}")
+
+    return score, findings
 
 
 def scan_bytes(
@@ -70,12 +147,12 @@ def scan_bytes(
     score = 0
     findings_list: List[str] = []
 
-    # ── HEURISTIC RULE 1: Dangerous Executable Extension ──────
+    # ── RULE 1: Dangerous Executable / Script Extension ──────
     if ext in DANGEROUS_EXTENSIONS:
         score += 50
-        findings_list.append(f"Dangerous executable extension ('{ext}')")
+        findings_list.append(f"Dangerous extension ('{ext}')")
 
-    # ── HEURISTIC RULE 2: Double Extension Trick (e.g. pdf.exe) ──
+    # ── RULE 2: Double Extension Trick (e.g. pdf.exe) ──
     parts = filename.split(".")
     if len(parts) > 2 and f".{parts[-1].lower()}" in DANGEROUS_EXTENSIONS:
         score += 40
@@ -83,7 +160,7 @@ def scan_bytes(
             f"Double extension trick detected ('{parts[-2]}.{parts[-1]}')"
         )
 
-    # ── HEURISTIC RULE 3: Executable Header Mismatch ──────────
+    # ── RULE 3: Executable Header Mismatch ──────────
     if data.startswith(b"MZ") and ext in [
         ".pdf",
         ".docx",
@@ -97,7 +174,13 @@ def scan_bytes(
             f"HEADER MISMATCH: Executable signature ('MZ') disguised as document '{ext}'"
         )
 
-    # ── HEURISTIC RULE 4: Zero-byte file ─────────────────────
+    # ── RULE 4: Deep Office Macro & OLE Stream Inspection ────
+    if ext in [".docx", ".docm", ".xlsx", ".xlsm", ".pptx", ".pptm"] or data.startswith(b"PK\x03\x04"):
+        macro_score, macro_findings = inspect_office_document(filename, data)
+        score += macro_score
+        findings_list.extend(macro_findings)
+
+    # ── RULE 5: Zero-byte file ─────────────────────
     if file_size == 0:
         score += 10
         findings_list.append("Zero-byte empty file")
@@ -113,7 +196,7 @@ def scan_bytes(
                     allowed_exts = [
                         e.strip().lower() for e in p.parameters.split(",")
                     ]
-                    if ext in allowed_exts:
+                    if ext in allowed_exts and score < 50:
                         score = 0
                         findings_list = [
                             f"Whitelisted extension ({ext}) by policy '{p.name}'"
@@ -132,7 +215,7 @@ def scan_bytes(
         except Exception:
             pass
 
-    # Verdict
+    # Verdict Calculation
     if score >= 50:
         verdict = "dangerous"
     elif score >= 20:

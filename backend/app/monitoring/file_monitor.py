@@ -1,6 +1,8 @@
 import os
 import time
 import hashlib
+import psutil
+import threading
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -14,7 +16,8 @@ from app.core.models import (
 from app.scanning.scanner import scan_bytes
 from app.defense.quarantine import quarantine_file
 
-WATCH_PATHS = [
+# Default local watch folders
+STATIC_WATCH_PATHS = [
     str(Path.home() / "Downloads"),
     str(Path.home() / "Documents"),
     str(Path.home() / "Desktop"),
@@ -23,6 +26,11 @@ WATCH_PATHS = [
 MAX_AUTO_SCAN_SIZE = 100 * 1024 * 1024
 CHUNK_SIZE = 64 * 1024
 HASH_CACHE: dict[str, str] = {}
+
+# Active Watchdog observer instance and list of watched paths
+_observer: Observer | None = None
+_watched_paths: set[str] = set()
+_watch_lock = threading.Lock()
 
 
 def safe_open_file(filepath: str, mode: str = "rb", max_retries: int = 3):
@@ -111,6 +119,19 @@ def create_alert(db, severity: str, alert_type: str, title: str, desc: str):
     db.commit()
 
 
+def get_removable_drives() -> list[str]:
+    """Scans Windows for connected USB / removable drive letters."""
+    drives = []
+    try:
+        for partition in psutil.disk_partitions(all=False):
+            if "removable" in partition.opts.lower() or "usb" in partition.opts.lower():
+                if os.path.exists(partition.mountpoint):
+                    drives.append(partition.mountpoint)
+    except Exception:
+        pass
+    return drives
+
+
 class TransferHandler(FileSystemEventHandler):
     def __init__(self):
         self._debounce: dict[str, float] = {}
@@ -188,12 +209,23 @@ class TransferHandler(FileSystemEventHandler):
                 if post_hash:
                     HASH_CACHE[filepath] = post_hash
 
+            # Detect Cross-Drive or USB Transfer
             actual_type = event_type
+            is_usb_transfer = False
+
+            removable_drives = get_removable_drives()
+            for drive in removable_drives:
+                if filepath.lower().startswith(drive.lower()):
+                    is_usb_transfer = True
+                    actual_type = "transfer"
+                    break
+
             if event_type == "move" and src_path and dest_path:
                 src_drive = os.path.splitdrive(src_path)[0]
                 dst_drive = os.path.splitdrive(dest_path)[0]
                 if src_drive != dst_drive:
                     actual_type = "transfer"
+                    is_usb_transfer = True
 
             fe = FileEvent(
                 filename=filename,
@@ -277,13 +309,14 @@ class TransferHandler(FileSystemEventHandler):
                     f"From {src_path} to {dest_path or 'n/a'} (user: {user})",
                 )
 
-            if actual_type == "transfer":
+            # Raise Exfiltration Alert for USB activity
+            if is_usb_transfer or actual_type == "transfer":
                 create_alert(
                     db,
-                    "high",
+                    "critical" if sensitive else "high",
                     "exfiltration",
-                    f"Cross-drive transfer: {filename}",
-                    f"File transferred from {src_path} to {dest_path}. Possible USB or network exfiltration.",
+                    f"🚨 USB / Cross-Drive Exfiltration: {filename}",
+                    f"File activity detected on USB/removable media or across drive letters. Path: {filepath}",
                 )
 
         except Exception as e:
@@ -292,19 +325,55 @@ class TransferHandler(FileSystemEventHandler):
             db.close()
 
 
-_observer: Observer | None = None
+def _usb_monitor_loop():
+    """Background thread that continuously checks for newly inserted USB drives."""
+    handler = TransferHandler()
+    while True:
+        try:
+            removable = get_removable_drives()
+            with _watch_lock:
+                for drive in removable:
+                    if drive not in _watched_paths and _observer:
+                        try:
+                            _observer.schedule(handler, drive, recursive=True)
+                            _watched_paths.add(drive)
+                            print(f"[USB DETECTED] Auto-attached monitor to USB Drive: {drive}")
+
+                            # Create alert when USB drive is plugged in
+                            db = SessionLocal()
+                            create_alert(
+                                db,
+                                "medium",
+                                "exfiltration",
+                                f"🔌 USB Storage Device Attached ({drive})",
+                                f"Monitoring started for removable drive at {drive}",
+                            )
+                            db.close()
+                        except Exception as e:
+                            print(f"Failed to watch USB drive {drive}: {e}")
+        except Exception:
+            pass
+        time.sleep(3)  # Check for USB drives every 3 seconds
 
 
 def start_monitoring():
     global _observer
     _observer = Observer()
     handler = TransferHandler()
-    for p in WATCH_PATHS:
-        if os.path.isdir(p):
-            _observer.schedule(handler, p, recursive=True)
-            print(f"Monitoring: {p}")
+
+    with _watch_lock:
+        for p in STATIC_WATCH_PATHS:
+            if os.path.isdir(p):
+                _observer.schedule(handler, p, recursive=True)
+                _watched_paths.add(p)
+                print(f"Monitoring: {p}")
+
     _observer.daemon = True
     _observer.start()
+
+    # Start USB Auto-Discovery Loop in background
+    t = threading.Thread(target=_usb_monitor_loop, daemon=True)
+    t.start()
 
 
 def stop_monitoring():
