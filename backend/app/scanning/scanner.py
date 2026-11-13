@@ -8,7 +8,6 @@ from typing import Dict, Any, List
 from sqlalchemy.orm import Session
 from app.core.models import Policy
 
-# Magic byte signatures
 MAGIC_BYTES = {
     "exe": [b"MZ"],
     "pdf": [b"%PDF"],
@@ -17,7 +16,6 @@ MAGIC_BYTES = {
     "office_legacy": [b"\xd0\xcf\11\xe0\xa1\xb1\x1a\xe1"],
 }
 
-# High-risk Android permissions found in modded / spyware APKs
 DANGEROUS_APK_PERMISSIONS = {
     b"android.permission.BIND_ACCESSIBILITY_SERVICE": 35,
     b"android.permission.SYSTEM_ALERT_WINDOW": 25,
@@ -32,18 +30,16 @@ DANGEROUS_APK_PERMISSIONS = {
     b"android.permission.ACCESS_FINE_LOCATION": 10,
 }
 
-# Suspicious bytecode execution indicators
 APK_SUSPICIOUS_PATTERNS = [
-    (b"DexClassLoader", 20, "Dynamic DEX execution (unauthorized code execution)"),
+    (b"DexClassLoader", 20, "Dynamic DEX execution"),
     (b"PathClassLoader", 15, "Dynamic class loading"),
-    (b"System.loadLibrary", 10, "Native code execution (.so payload execution)"),
-    (b"testkey", 25, "App signed with public test/debug key (likely modded)"),
-    (b"androiddebugkey", 25, "App signed with debug key (likely cracked/modded)"),
+    (b"System.loadLibrary", 10, "Native code execution"),
+    (b"testkey", 25, "App signed with public test/debug key"),
+    (b"androiddebugkey", 25, "App signed with debug key"),
     (b"Lcom/cheat", 25, "Injected cheat/mod framework"),
     (b"Lcom/mod", 15, "Modded application signature"),
 ]
 
-# Regex patterns for sensitive data leak detection
 SECRETS_PATTERNS = [
     (re.compile(rb"-----BEGIN (?:RSA|OPENSSH|DSA|EC|PGP) PRIVATE KEY-----"), 40, "Exfiltration Risk: Private SSH/PGP Key Leak"),
     (re.compile(rb"AKIA[0-9A-Z]{16}"), 35, "Exfiltration Risk: Hardcoded AWS Access Key ID"),
@@ -52,7 +48,6 @@ SECRETS_PATTERNS = [
     (re.compile(rb"(?:password|passwd|pwd)\s*[:=]\s*[\"'][^\"']{4,}[\"']", re.IGNORECASE), 25, "Exfiltration Risk: Hardcoded Password String"),
 ]
 
-# Script & Batch Heuristic Inspection Rules
 SCRIPT_DANGEROUS_PATTERNS = [
     (re.compile(rb"(?:powershell|pwsh)\s+.*-(?:e|enc|encodedcommand)\b", re.IGNORECASE), 45, "Encoded PowerShell command execution"),
     (re.compile(rb"certutil(?:\.exe)?\s+.*-urlcache", re.IGNORECASE), 40, "Certutil binary downloader payload"),
@@ -68,7 +63,6 @@ def calculate_entropy(file_path: str, max_bytes: int = 1024 * 1024) -> float:
             data = f.read(max_bytes)
         if not data:
             return 0.0
-        
         length = len(data)
         counts = Counter(data)
         entropy = 0.0
@@ -78,6 +72,52 @@ def calculate_entropy(file_path: str, max_bytes: int = 1024 * 1024) -> float:
         return round(entropy, 2)
     except Exception:
         return 0.0
+
+def inspect_steganography(file_path: str) -> Dict[str, Any]:
+    """Detects hidden archives or executable binaries appended past image End-Of-File (EOF) markers."""
+    score = 0
+    threats = []
+    file_ext = os.path.splitext(file_path)[1].lower()
+
+    if file_ext not in [".png", ".jpg", ".jpeg", ".gif"]:
+        return {"score_adder": 0, "threats": []}
+
+    try:
+        with open(file_path, "rb") as f:
+            data = f.read()
+
+        eof_pos = -1
+        if file_ext in [".jpg", ".jpeg"]:
+            eof_pos = data.rfind(b"\xff\xd9")
+            if eof_pos != -1:
+                eof_pos += 2
+        elif file_ext == ".png":
+            eof_pos = data.rfind(b"\x49\x45\x4e\x44\xae\x42\x60\x82")
+            if eof_pos != -1:
+                eof_pos += 8
+        elif file_ext == ".gif":
+            eof_pos = data.rfind(b"\x00\x3b")
+            if eof_pos != -1:
+                eof_pos += 2
+
+        if eof_pos != -1 and eof_pos < len(data):
+            trailing_data = data[eof_pos:]
+            if b"PK\x03\x04" in trailing_data:
+                score += 45
+                threats.append("Polyglot Steganography Threat: Hidden ZIP/Archive appended after image EOF")
+            elif b"MZ" in trailing_data:
+                score += 50
+                threats.append("Polyglot Steganography Threat: Hidden Executable Binary (.exe) appended after image EOF")
+            elif b"Rar!" in trailing_data:
+                score += 45
+                threats.append("Polyglot Steganography Threat: Hidden RAR Archive appended after image EOF")
+            elif len(trailing_data) > 64:
+                score += 25
+                threats.append("Suspicious trailing payload data appended to image file")
+    except Exception:
+        pass
+
+    return {"score_adder": score, "threats": threats}
 
 def inspect_apk(apk_path: str) -> Dict[str, Any]:
     score = 0
@@ -208,7 +248,6 @@ def scan_file(file_path: str, db: Session) -> Dict[str, Any]:
     file_size = os.path.getsize(file_path)
 
     try:
-        # Safe Policy Querying (handles column differences gracefully)
         try:
             filter_col = getattr(Policy, 'is_active', getattr(Policy, 'is_enabled', getattr(Policy, 'enabled', None)))
             if filter_col is not None:
@@ -228,6 +267,11 @@ def scan_file(file_path: str, db: Session) -> Dict[str, Any]:
                 threats.append(f"Blocked file extension policy ({file_ext})")
         except Exception:
             pass
+
+        # Steganography Payload Check for Images
+        stego_res = inspect_steganography(file_path)
+        threat_score += stego_res["score_adder"]
+        threats.extend(stego_res["threats"])
 
         # Entropy Analysis
         if file_size > 1024:
@@ -256,25 +300,21 @@ def scan_file(file_path: str, db: Session) -> Dict[str, Any]:
         except Exception as e:
             threats.append(f"Header reading error: {str(e)}")
 
-        # APK Deep Inspection
         if file_ext == ".apk":
             apk_res = inspect_apk(file_path)
             threat_score += apk_res["score_adder"]
             threats.extend(apk_res["threats"])
 
-        # Office Document Inspection
         elif file_ext in [".doc", ".docm", ".xls", ".xlsm", ".pptm", ".docx", ".xlsx"]:
             macro_res = inspect_office_document(file_path)
             threat_score += macro_res["score_adder"]
             threats.extend(macro_res["threats"])
 
-        # Script Inspection (.bat, .cmd, .ps1, .vbs, .js, .sh)
         elif file_ext in [".bat", ".cmd", ".ps1", ".vbs", ".js", ".sh"]:
             script_res = inspect_script(file_path)
             threat_score += script_res["score_adder"]
             threats.extend(script_res["threats"])
 
-        # Secrets & Credential Leak Inspection
         if file_ext in [".txt", ".json", ".xml", ".py", ".js", ".env", ".pem", ".key", ".config", ".bat", ".ps1"]:
             try:
                 with open(file_path, "rb") as f:
@@ -286,7 +326,6 @@ def scan_file(file_path: str, db: Session) -> Dict[str, Any]:
             except Exception:
                 pass
 
-        # Double File Extension Check
         if re.search(r'\.(exe|vbs|bat|ps1|apk)\.(exe|vbs|bat|ps1|apk|zip|txt)$', file_name.lower()):
             threat_score += 50
             threats.append("Suspicious double file extension detected")
@@ -308,7 +347,7 @@ def scan_file(file_path: str, db: Session) -> Dict[str, Any]:
         "threat_score": threat_score,
         "verdict": verdict,
         "threats_detected": list(set(threats)) if threats else ["No immediate threats detected"],
-        "details": f"Analyzed {file_size} bytes. Entropy, Secrets, APK & Script checks completed."
+        "details": f"Analyzed {file_size} bytes. Entropy, Steganography, Secrets, APK & Script checks completed."
     }
 
 def scan_bytes(file_bytes: bytes, file_name: str, db: Session) -> Dict[str, Any]:

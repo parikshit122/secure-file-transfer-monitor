@@ -64,3 +64,12 @@ class QuarantinedFile(Base):
     file_hash = Column(String)
     reason = Column(String)
     timestamp = Column(DateTime, default=datetime.utcnow)
+
+class USBWhitelist(Base):
+    __tablename__ = "usb_whitelist"
+
+    id = Column(Integer, primary_key=True, index=True)
+    drive_letter = Column(String)
+    volume_name = Column(String, default="Removable Drive")
+    is_approved = Column(Boolean, default=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)

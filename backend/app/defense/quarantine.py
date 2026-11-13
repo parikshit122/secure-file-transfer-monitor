@@ -4,9 +4,9 @@ import hashlib
 from datetime import datetime
 from sqlalchemy.orm import Session
 from app.core.models import QuarantinedFile, Alert
+from app.defense.shredder import shred_file
 
 def quarantine_file(file_path: str, db: Session, reason: str = "Automated Active Defense Neutralization") -> bool:
-    """Isolates dangerous files into quarantine_vault/ safely and silently."""
     if not os.path.exists(file_path):
         return False
 
@@ -26,8 +26,7 @@ def quarantine_file(file_path: str, db: Session, reason: str = "Automated Active
 
         if os.path.exists(quarantine_path):
             try:
-                os.chmod(quarantine_path, 0o777)
-                os.remove(quarantine_path)
+                shred_file(quarantine_path)
             except Exception:
                 pass
 
@@ -65,7 +64,6 @@ def quarantine_file(file_path: str, db: Session, reason: str = "Automated Active
         return False
 
 def restore_quarantined_file(quarantine_id: int, db: Session) -> bool:
-    """Restores a quarantined file back to its original path."""
     record = db.query(QuarantinedFile).filter(QuarantinedFile.id == quarantine_id).first()
     if not record:
         return False
@@ -91,18 +89,14 @@ def restore_quarantined_file(quarantine_id: int, db: Session) -> bool:
         return False
 
 def delete_quarantined_file(quarantine_id: int, db: Session) -> bool:
-    """Permanently deletes a file from the quarantine vault."""
+    """Permanently shreds file from disk using DoD 3-Pass Overwrite standard."""
     record = db.query(QuarantinedFile).filter(QuarantinedFile.id == quarantine_id).first()
     if not record:
         return False
 
     try:
         if os.path.exists(record.quarantine_path):
-            try:
-                os.chmod(record.quarantine_path, 0o777)
-                os.remove(record.quarantine_path)
-            except Exception:
-                pass
+            shred_file(record.quarantine_path)
 
         db.delete(record)
         db.commit()

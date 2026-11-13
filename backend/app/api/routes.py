@@ -263,3 +263,30 @@ def export_csv_report(db: Session = Depends(get_db)):
     response = Response(content=output.getvalue(), media_type="text/csv")
     response.headers["Content-Disposition"] = f"attachment; filename=sftms_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     return response
+
+
+# --- USB WHITELIST ENDPOINTS ---
+@router.get("/usb-whitelist")
+def get_usb_whitelist(db: Session = Depends(get_db)):
+    return db.query(USBWhitelist).all()
+
+@router.post("/usb-whitelist")
+def add_usb_whitelist(drive_letter: str, volume_name: str = "Removable Drive", db: Session = Depends(get_db)):
+    formatted_letter = drive_letter.strip().upper()
+    if not formatted_letter.endswith(":"):
+        formatted_letter += ":"
+    
+    usb_entry = USBWhitelist(drive_letter=formatted_letter, volume_name=volume_name, is_approved=True)
+    db.add(usb_entry)
+    db.commit()
+    db.refresh(usb_entry)
+    return usb_entry
+
+@router.delete("/usb-whitelist/{usb_id}")
+def delete_usb_whitelist(usb_id: int, db: Session = Depends(get_db)):
+    entry = db.query(USBWhitelist).filter(USBWhitelist.id == usb_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="USB whitelist entry not found")
+    db.delete(entry)
+    db.commit()
+    return {"message": "USB drive removed from whitelist"}

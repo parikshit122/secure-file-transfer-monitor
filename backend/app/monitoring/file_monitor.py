@@ -9,7 +9,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from app.core.database import SessionLocal
-from app.core.models import FileEvent, ScanResult, Alert, SensitiveDirectory
+from app.core.models import FileEvent, ScanResult, Alert, SensitiveDirectory, USBWhitelist
 from app.scanning.scanner import scan_file
 from app.defense.quarantine import quarantine_file
 from app.core.notifications import send_alert_notification
@@ -39,6 +39,23 @@ def get_process_writing_file(file_path: str) -> str:
     except Exception:
         pass
     return "explorer.exe"
+
+def is_unapproved_usb_drive(target_path: str, db: Session) -> bool:
+    """Detects if file is being written to an unapproved removable USB drive."""
+    drive_letter = os.path.splitdrive(target_path)[0].upper()
+    if not drive_letter:
+        return False
+
+    for part in psutil.disk_partitions(all=True):
+        if part.mountpoint.startswith(drive_letter):
+            if 'removable' in part.opts.lower() or 'cdrom' in part.opts.lower():
+                approved = db.query(USBWhitelist).filter(
+                    USBWhitelist.drive_letter == drive_letter,
+                    USBWhitelist.is_approved == True
+                ).first()
+                if not approved:
+                    return True
+    return False
 
 class SFTMSEventHandler(FileSystemEventHandler):
     def process_event(self, event_type: str, src_path: str, dest_path: str = None):
@@ -92,6 +109,24 @@ class SFTMSEventHandler(FileSystemEventHandler):
             db.add(file_event)
             db.commit()
 
+            # USB Exfiltration Lock & Whitelist Enforcement
+            if is_unapproved_usb_drive(target_path, db):
+                usb_alert = Alert(
+                    severity="CRITICAL",
+                    title=f"USB Exfiltration Warning: {file_name}",
+                    description=f"File transferred to unapproved removable USB drive ({target_path[:3]}) by process '{process_name}'.",
+                    file_path=target_path,
+                    status="UNRESOLVED",
+                    timestamp=datetime.utcnow()
+                )
+                db.add(usb_alert)
+                db.commit()
+                send_alert_notification(
+                    title="🚨 Unapproved USB Exfiltration Block",
+                    message=f"Unauthorized transfer of {file_name} to removable drive!"
+                )
+
+            # Heuristic Scan & Active Defense
             if file_size > 0 and file_size < (100 * 1024 * 1024):
                 scan_res = scan_file(target_path, db)
                 
@@ -133,26 +168,6 @@ class SFTMSEventHandler(FileSystemEventHandler):
                             title="🛡️ File Auto-Quarantined",
                             message=f"{file_name} was isolated and secured in Quarantine Vault."
                         )
-
-            sensitive_dirs = db.query(SensitiveDirectory).all()
-            for s_dir in sensitive_dirs:
-                if target_path.lower().startswith(s_dir.path.lower()):
-                    exfil_alert = Alert(
-                        severity="HIGH",
-                        title=f"Unauthorized Movement in Restricted Path: {file_name}",
-                        description=f"File transferred inside sensitive directory '{s_dir.path}' by process '{process_name}'.",
-                        file_path=target_path,
-                        status="UNRESOLVED",
-                        timestamp=datetime.utcnow()
-                    )
-                    db.add(exfil_alert)
-                    db.commit()
-                    
-                    send_alert_notification(
-                        title="🚨 Sensitive Location Alert",
-                        message=f"Unauthorized transfer inside {s_dir.path} by {process_name}"
-                    )
-                    break
 
             db.commit()
         except Exception:
